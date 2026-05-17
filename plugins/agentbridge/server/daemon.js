@@ -2824,7 +2824,9 @@ ${payload.content}`,
   });
   on("exit", (code) => {
     log(`[pair=${pair.pairId}] Codex app-server process exited (code ${code})`);
-    codexBootstrapped = false;
+    if (pair.pairId === "default") {
+      codexBootstrapped = false;
+    }
     pair.isLive = false;
     pair.tuiConnectionState.handleCodexExit();
     const affectedChats = [];
