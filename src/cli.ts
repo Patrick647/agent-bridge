@@ -23,7 +23,7 @@ async function main() {
   switch (command) {
     case "init":
       const { runInit } = await import("./cli/init");
-      await runInit();
+      await runInit(restArgs);
       break;
     case "dev":
       const { runDev } = await import("./cli/dev");
@@ -86,12 +86,14 @@ Options:
   --version, -v     Show version
 
 Examples:
-  abg init                     # First-time setup
-  abg claude                   # Start Claude Code
-  abg claude --resume          # Start Claude Code and resume session
-  abg codex                    # Start Codex TUI
-  abg codex --model o3         # Start Codex with specific model
-  abg kill                     # Emergency: kill all processes
+  abg init                                 # First-time setup (default collab content)
+  abg init --workflow codex-implements     # Init with Codex-implements / Claude-reviews preset
+  abg claude                               # Start Claude Code
+  abg claude --resume                      # Start Claude Code and resume session
+  abg codex                                # Start Codex TUI
+  abg codex --model o3                     # Start Codex with specific model
+  abg codex --sandbox workspace-write      # Codex with write access (preset-friendly)
+  abg kill                                 # Emergency: kill all processes
 `.trim());
 }
 
