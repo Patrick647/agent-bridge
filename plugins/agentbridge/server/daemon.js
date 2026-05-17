@@ -2379,10 +2379,10 @@ import { readFileSync as readFileSync3, writeFileSync as writeFileSync3, renameS
 import { dirname as dirname2 } from "path";
 import { randomBytes } from "crypto";
 var DEFAULT_PAIR_PORTS = { appPort: 4500, proxyPort: 4501 };
-var STRIDE_BASE = parseInt(process.env.AGENTBRIDGE_PAIR_STRIDE_BASE ?? "4510", 10);
-var STRIDE_STEP_DEFAULT = parseInt(process.env.AGENTBRIDGE_PAIR_STRIDE_STEP ?? "10", 10);
-var STRIDE_MAX_DEFAULT = parseInt(process.env.AGENTBRIDGE_PAIR_STRIDE_MAX ?? "20", 10);
-var MAX_PAIRS_DEFAULT = parseInt(process.env.AGENTBRIDGE_PAIR_MAX_PAIRS ?? "8", 10);
+var STRIDE_BASE = 4510;
+var STRIDE_STEP_DEFAULT = 10;
+var STRIDE_MAX_DEFAULT = 20;
+var MAX_PAIRS_DEFAULT = 8;
 var PAIR_NAME_REGEX = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 function isValidPairName(name) {
   if (typeof name !== "string")
@@ -3538,6 +3538,9 @@ function handleClaudeToCodex(ws, message) {
   log(`[${chatId}] Forwarding Claude \u2192 Codex (${message.message.content.length} chars, requireReply=${requireReply}, paired=${state.paired}, homePair=${state.homePairId})`);
   const homePair = state.paired && state.homePairId ? pairs.get(state.homePairId) : undefined;
   if (state.paired && (!homePair || !homePair.isLive)) {
+    if (requireReply) {
+      state.replyRequired = false;
+    }
     return sendProtocolMessage(ws, {
       type: "claude_to_codex_result",
       requestId: message.requestId,
@@ -3978,7 +3981,8 @@ var __testing = {
     wireClaudeThreadEvents,
     setShuttingDownForTest(value) {
       shuttingDown = value;
-    }
+    },
+    handleClaudeToCodex
   },
   pairRegistry,
   runUnderRegistryMutex,

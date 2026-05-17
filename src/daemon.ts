@@ -1499,12 +1499,23 @@ function handleClaudeToCodex(
   // the module-level `codex` (which is just the default pair's). For a
   // Claude paired with the "work" pair, using the default's codex meant
   // injecting into a TUI/thread that didn't exist — "Cannot inject: no
-  // active thread" was the symptom. Look up the per-pair adapter.
+  // active thread" was the symptom and "Shared Codex TUI is busy" the
+  // user-facing error. Look up the per-pair adapter via homePairId.
   const homePair = state.paired && state.homePairId ? pairs.get(state.homePairId) : undefined;
   if (state.paired && (!homePair || !homePair.isLive)) {
     // Pair vanished or went down between FIFO claim and this reply
-    // (e.g. concurrent `destroy_pair --force`). Surface explicitly
+    // (e.g. concurrent `destroy_pair --force` race). Surface explicitly
     // rather than silently injecting into the wrong pair.
+    //
+    // Codex re-review of ebea1d3 (msg ..._197) — must roll back
+    // replyRequired here because we set it above (line 1487) before
+    // attempting the injection. Without rollback, a racing requireReply
+    // reply against pair teardown leaves the chat in stale reply-
+    // required state even though no injection happened, mirroring the
+    // later `!injected` branch's rollback contract.
+    if (requireReply) {
+      state.replyRequired = false;
+    }
     return sendProtocolMessage(ws, {
       type: "claude_to_codex_result",
       requestId: message.requestId,
@@ -2139,6 +2150,10 @@ export const __testing = {
     /** Issue #82 (2026-05-17): exposed so tests can flip `shuttingDown`
      * to assert close-handler guard behavior during shutdown. */
     setShuttingDownForTest(value: boolean) { shuttingDown = value; },
+    /** M01 probe bug regression (2026-05-17): exposed so a unit test
+     * can assert paired-inject routes to the chat's homePair adapter
+     * (not the module-level default `codex`). */
+    handleClaudeToCodex,
   } as const,
   /** STM v2.3 §D2 P3b — registry handle (read for assertions; mutate via handlers). */
   pairRegistry,
