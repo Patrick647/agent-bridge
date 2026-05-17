@@ -169,6 +169,57 @@ export class MultiPairProbe extends SharedThreadProbe {
     await client.connect();
     return client;
   }
+
+  /**
+   * Stop the current daemon (SIGTERM, wait for exit) and spawn a fresh
+   * one against the SAME state dir — registry on disk survives, in-
+   * memory state is gone. Used by M08 to verify pair-registry
+   * persistence + port-reuse semantics across daemon restarts.
+   *
+   * Accesses SharedThreadProbe's private `daemon` field via cast
+   * (private is compile-time-only in TS). Matches the spawn shape in
+   * SharedThreadProbe.startDaemon() except the rmSync state-dir wipe.
+   */
+  async restartDaemon(): Promise<void> {
+    const self = this as any;
+    const oldProc = self.daemon;
+    if (oldProc) {
+      this.log(`restartDaemon: SIGTERM old pid=${oldProc.pid}`);
+      try { oldProc.kill("SIGTERM"); } catch {}
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(() => resolve(), 2000);
+        oldProc.once("exit", () => { clearTimeout(t); resolve(); });
+      });
+    }
+
+    const env = {
+      ...process.env,
+      AGENTBRIDGE_STATE_DIR: this.stateDir,
+      CODEX_WS_PORT: String(this.appPort),
+      CODEX_PROXY_PORT: String(this.proxyPort),
+      AGENTBRIDGE_CONTROL_PORT: String(this.controlPort),
+      AGENTBRIDGE_IDLE_SHUTDOWN_MS: "300000",
+      AGENTBRIDGE_FILTER_MODE: "full",
+      AGENTBRIDGE_PAIR_REAP_MS: String(self.pairReapMs),
+      AGENTBRIDGE_PAIR_RACE_MS: "0",
+      AGENTBRIDGE_PAIR_STRIDE_BASE: "24510",
+      ...self.extraEnv,
+    };
+
+    this.log(`restartDaemon: spawning fresh daemon (state dir preserved)`);
+    const { spawn } = await import("node:child_process");
+    const proc = spawn("bun", [self.daemonEntry], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    proc.stdout?.on("data", (chunk: Buffer) => self.captureDaemon("out", chunk));
+    proc.stderr?.on("data", (chunk: Buffer) => self.captureDaemon("err", chunk));
+    proc.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+      this.log(`daemon exited code=${code ?? "null"} signal=${signal ?? "null"}`);
+    });
+    self.daemon = proc;
+    await this.waitReady();
+  }
 }
 
 /**
