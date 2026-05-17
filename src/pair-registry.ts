@@ -38,14 +38,16 @@ import { randomBytes } from "node:crypto";
 /** Default pair's port tuple. Fixed by v2.2 compatibility. */
 export const DEFAULT_PAIR_PORTS = { appPort: 4500, proxyPort: 4501 } as const;
 
-/** Stride start (first named pair gets STRIDE_BASE). Default 4510. */
-const STRIDE_BASE = 4510;
+/** Stride start (first named pair gets STRIDE_BASE). Default 4510.
+ * Overridable via env `AGENTBRIDGE_PAIR_STRIDE_BASE` so probes / tests
+ * can move the allocation range away from a developer's running daemon. */
+const STRIDE_BASE = parseInt(process.env.AGENTBRIDGE_PAIR_STRIDE_BASE ?? "4510", 10);
 /** Distance between consecutive pair allocations. */
-const STRIDE_STEP_DEFAULT = 10;
+const STRIDE_STEP_DEFAULT = parseInt(process.env.AGENTBRIDGE_PAIR_STRIDE_STEP ?? "10", 10);
 /** Number of strides scanned before giving up with `ALLOCATION_FAILED`. */
-const STRIDE_MAX_DEFAULT = 20;
+const STRIDE_MAX_DEFAULT = parseInt(process.env.AGENTBRIDGE_PAIR_STRIDE_MAX ?? "20", 10);
 /** Maximum live pairs the daemon will accept. */
-const MAX_PAIRS_DEFAULT = 8;
+const MAX_PAIRS_DEFAULT = parseInt(process.env.AGENTBRIDGE_PAIR_MAX_PAIRS ?? "8", 10);
 
 // ── Pair name validation (D1) ──────────────────────────────────────────
 
