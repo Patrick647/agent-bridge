@@ -117,11 +117,18 @@ export class MultiPairProbe extends SharedThreadProbe {
   async destroyPair(
     pairId: string,
     opts: { forget?: boolean; force?: boolean } = {},
-  ): Promise<{ type: "pair_destroyed" | "pair_error"; code?: string; message?: string; forgotten?: boolean }> {
+  ): Promise<{
+    type: "pair_destroyed" | "pair_error";
+    code?: string;
+    message?: string;
+    wasLive?: boolean;
+    registryEntryRemoved?: boolean;
+  }> {
     const response = await this.controlRpc<{
       type: "pair_destroyed" | "pair_error";
       pairId: string;
-      forgotten?: boolean;
+      wasLive?: boolean;
+      registryEntryRemoved?: boolean;
       code?: string;
       message?: string;
     }>(
