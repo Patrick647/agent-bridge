@@ -167,6 +167,30 @@ describe("workflow preset registry", () => {
     expect(sections.agentsMd).toContain("Implementer / Executor / Verifier");
     expect(sections.agentsMd).toContain("Stop at git boundary");
   });
+
+  test("codex-implements preset wires the abg task review state machine", () => {
+    // Step 1.5 (2026-05-18): preset must instruct agents on calling
+    // `abg task ...` CLI so the review gate is enforced. Without these
+    // commands in the preset, agents only chat verdicts through bridge
+    // (not enforceable) instead of recording them via journal.
+    const sections = getWorkflowSections("codex-implements");
+
+    // Claude side: start + verdict + journal commands.
+    expect(sections.claudeMd).toContain("abg task start");
+    expect(sections.claudeMd).toContain("abg task verdict");
+    expect(sections.claudeMd).toContain("--as claude");
+    expect(sections.claudeMd).toContain("--must-fix");
+    // Claude side: state machine concept introduced.
+    expect(sections.claudeMd).toMatch(/state machine|review gate|enforced/i);
+
+    // Codex side: submit command + --as codex + iteration loop.
+    expect(sections.agentsMd).toContain("abg task submit");
+    expect(sections.agentsMd).toContain("--as codex");
+    expect(sections.agentsMd).toContain("abg task status");
+    // Codex side: NEED_REVISION + iteration explained.
+    expect(sections.agentsMd).toContain("NEED_REVISION");
+    expect(sections.agentsMd).toMatch(/iterate|iteration N\+1/i);
+  });
 });
 
 describe("writeCollaborationSections with --workflow codex-implements", () => {

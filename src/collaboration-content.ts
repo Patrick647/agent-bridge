@@ -94,18 +94,49 @@ Another AI agent (Codex, by OpenAI) is available in a parallel session on this m
 - If Codex looks for a "send-to-Claude" tool — remind it its side is transparent.
 
 ### How to run a turn
+
+**The state machine is the backbone**. Each turn is a recorded task in \`.agentbridge/tasks/\`. Use the \`abg task ...\` CLI to enforce the review gate — do NOT just chat verdicts via the bridge. Verdicts in chat aren't enforceable; verdicts recorded via \`abg task verdict\` are.
+
 1. **Receive user task** → decide if it's complex enough for split (most non-trivial tasks are). For one-liners, do it solo.
-2. **Plan + brief** → write the plan, send to Codex via \`reply\`: scope, acceptance criteria, file pointers, what NOT to do.
-3. **Wait for Codex** → don't poll. Watch for "Codex finished" sentinel in push notifications.
-4. **Read the diff** → \`git diff\` / \`git status\`. Do NOT trust Codex's summary; verify against the actual change.
-5. **Review independently** → write a verdict with "I agree on:", "I disagree on:", "Must-fix:" sections. Give specific line refs.
-6. **Codex iterates** → if must-fix exists, send back; loop until GO.
-7. **You commit + push** → bilingual commit message per project convention. PR with Codex's review captured.
+
+2. **Start the task journal** (records the contract):
+   \`\`\`
+   abg task start "<one-line prompt>" --implementer codex --reviewer claude
+   \`\`\`
+   Output gives you the task-id. Most flows use \`active\` shortcut — the most recent task is auto-active.
+
+3. **Plan + brief** → write the plan in chat, send to Codex via \`reply\`: scope, acceptance criteria, file pointers, what NOT to do. Include the task-id so Codex knows which journal to submit against.
+
+4. **Wait for Codex's submit** → don't poll. Codex calls \`abg task submit --output "..." --commit <sha> --as codex\` when done. Check progress with \`abg task status\`.
+
+5. **Read the actual diff** → \`git diff\` against Codex's reported commit. Do NOT trust the summary in submit output; verify against the actual change.
+
+6. **Review independently + record verdict via CLI**:
+   - For NEED_REVISION: \`abg task verdict NEED_REVISION --as claude --must-fix "specific item 1" --must-fix "..."\`
+   - For GO: \`abg task verdict GO --as claude --notes "ship it"\`
+   - For NO_GO: \`abg task verdict NO_GO --as claude --notes "fundamentally wrong approach"\`
+
+   NEED_REVISION **requires** at least one \`--must-fix\` item — the CLI rejects empty NEED_REVISION verdicts. GO transitions to approved (terminal). NO_GO is for "abandon this approach entirely".
+
+7. **If NEED_REVISION** → Codex iterates. Watch for next submit; back to step 5. State machine prevents skipping review — Codex cannot self-approve.
+
+8. **GO → you commit + push** → bilingual commit message per project convention. Include \`abg task journal <task-id>\` output in PR body for review evidence.
 
 ### Honest reviewer ground rules
 - A finding-free review is suspicious. If you can't find anything to push back on, say so explicitly and explain why.
 - "I agree with all of it" should be supported by specific reasoning, not blanket assent.
-- If Codex's confidence is high and yours is low, ASK for a smaller change you can fully understand before approving.`;
+- If Codex's confidence is high and yours is low, ASK for a smaller change you can fully understand before approving.
+- **NEED_REVISION is cheap; bad approval is expensive**. When in doubt, send back with a specific must-fix.
+
+### Task journal commands quick reference
+| Command | When |
+|---|---|
+| \`abg task start "..." --implementer codex --reviewer claude\` | Beginning of every multi-agent task |
+| \`abg task status [task-id]\` | Check current state |
+| \`abg task verdict <GO\\|NEED_REVISION\\|NO_GO> --as claude --must-fix "..."\` | Record review decision (enforced contract) |
+| \`abg task journal [task-id]\` | Full markdown history (paste into PR body) |
+| \`abg task list\` | All tasks (active + completed + abandoned) |
+| \`abg task abandon [task-id] --reason "..."\` | Bail out cleanly |`;
 
 const CODEX_IMPLEMENTS_AGENTS_MD = `\
 ## AgentBridge — Multi-Agent Collaboration (codex-implements preset)
@@ -134,11 +165,27 @@ AgentBridge is a **transparent proxy** on your side. You do **not** have a tool 
 **Do not** search the AgentBridge source for a Codex-side "send" / "reply" / "sendToClaude" API — it does not exist.
 
 ### How to run a turn
-1. **Wait for Claude's brief** → scope + acceptance criteria + file pointers. If unclear or scope is missing, push back BEFORE implementing.
-2. **Implement** → make the change; use your sandbox to run tests and verify locally.
-3. **Report back** → write a short status: what changed, what was tested, what's NOT covered. Include file:line refs.
-4. **Wait for Claude's review** → expect specific feedback. If Claude says "must-fix X", fix it before declaring done.
-5. **Stop at git boundary** → never run \`git commit\` / \`git push\` / \`git rebase\`. Tell Claude "ready for commit" and let it handle git.
+
+**The state machine is the backbone**. Every multi-agent task is a recorded journal at \`.agentbridge/tasks/<task-id>.json\`. Use the \`abg task ...\` CLI to record your submissions — Claude's review is enforced through that journal, NOT through chat-only verdicts.
+
+1. **Wait for Claude's brief** → scope + acceptance criteria + file pointers + the **task-id** Claude started. If unclear or scope missing, push back BEFORE implementing. (Check active task with \`abg task status\`.)
+
+2. **Implement** → make the change; run tests in sandbox; verify locally.
+
+3. **Submit your iteration via the CLI** (this is the enforced contract):
+   \`\`\`
+   abg task submit --output "<short summary: what changed, what tested, what's NOT covered>" --commit <sha> --as codex
+   \`\`\`
+   - Must pass \`--as codex\` to claim implementer role (CLI rejects without it)
+   - Include \`--commit <sha>\` if you made one; if you don't have git access, just describe the change as output
+   - Output should be tight — Claude reads it to decide whether to dig into the diff. Lie-resistant; Claude verifies against actual diff anyway
+
+4. **Wait for Claude's verdict** → Claude calls \`abg task verdict ...\`. Poll with \`abg task status\` to see decision. Three outcomes:
+   - **GO**: task approved (terminal). Tell user "ready for commit" — Claude handles git.
+   - **NEED_REVISION** + must-fix list: read it (\`abg task status\` shows must-fix items), fix each one, then \`abg task submit\` iteration N+1 with \`--as codex\` again. Loop until GO.
+   - **NO_GO**: approach was fundamentally wrong; task rejected (terminal). Discuss with user before retrying with a different approach.
+
+5. **Stop at git boundary** → never run \`git commit\` / \`git push\` / \`git rebase\`. Even after GO. Claude commits using the journal as PR evidence.
 
 ### Honest implementer ground rules
 - Don't widen scope without asking. If you find a tangential bug, surface it but don't fix it without Claude's sign-off.
