@@ -3044,6 +3044,9 @@ function handleControlMessage(ws, raw) {
     case "list_pairs":
       handleListPairs(ws, message);
       return;
+    case "claim_pair_for_chat":
+      handleClaimPairForChat(ws, message);
+      return;
   }
 }
 async function handleEnsurePair(ws, message) {
@@ -3180,6 +3183,110 @@ function handleListPairs(ws, message) {
     type: "pair_list",
     requestId: message.requestId,
     pairs: result
+  });
+}
+function handleClaimPairForChat(ws, message) {
+  const { chatId, pairId, requestId } = message;
+  const state = chats.get(chatId);
+  if (!state) {
+    sendProtocolMessage(ws, {
+      type: "pair_claim_failed",
+      requestId,
+      chatId,
+      code: "CHAT_NOT_FOUND",
+      message: `No chat with chatId="${chatId}" is currently attached.`
+    });
+    return;
+  }
+  if (state.paired) {
+    sendProtocolMessage(ws, {
+      type: "pair_claim_failed",
+      requestId,
+      chatId,
+      code: "CHAT_ALREADY_PAIRED",
+      message: `Chat "${chatId}" is already paired (homePairId=${state.homePairId}).`
+    });
+    return;
+  }
+  let targetPair;
+  if (pairId) {
+    const candidate = pairs.get(pairId);
+    if (!candidate) {
+      sendProtocolMessage(ws, {
+        type: "pair_claim_failed",
+        requestId,
+        chatId,
+        code: "PAIR_NOT_FOUND",
+        message: `Pair "${pairId}" does not exist.`
+      });
+      return;
+    }
+    if (!candidate.isLive) {
+      sendProtocolMessage(ws, {
+        type: "pair_claim_failed",
+        requestId,
+        chatId,
+        code: "PAIR_NOT_LIVE",
+        message: `Pair "${pairId}" is registered but not live (no codex app-server running).`
+      });
+      return;
+    }
+    if (!candidate.proxyTuiSlot) {
+      sendProtocolMessage(ws, {
+        type: "pair_claim_failed",
+        requestId,
+        chatId,
+        code: "PAIR_BUSY",
+        message: `Pair "${pairId}" has no proxy TUI slot (no --via-proxy TUI attached).`
+      });
+      return;
+    }
+    if (candidate.proxyTuiSlot.pairedChatId !== null) {
+      sendProtocolMessage(ws, {
+        type: "pair_claim_failed",
+        requestId,
+        chatId,
+        code: "PAIR_BUSY",
+        message: `Pair "${pairId}" is already paired with chatId="${candidate.proxyTuiSlot.pairedChatId}".`
+      });
+      return;
+    }
+    targetPair = candidate;
+  } else {
+    for (const candidate of pairs.values()) {
+      if (!candidate.isLive)
+        continue;
+      if (!candidate.proxyTuiSlot)
+        continue;
+      if (candidate.proxyTuiSlot.pairedChatId !== null)
+        continue;
+      targetPair = candidate;
+      break;
+    }
+    if (!targetPair) {
+      sendProtocolMessage(ws, {
+        type: "pair_claim_failed",
+        requestId,
+        chatId,
+        code: "NO_FREE_PAIR",
+        message: `No live pair with an unpaired proxy TUI slot is available. ` + `Start a Codex TUI via \`abg codex --via-proxy [--pair NAME]\` first, ` + `or pass an explicit \`--pair NAME\` to target a specific pair.`
+      });
+      return;
+    }
+  }
+  state.homePairId = targetPair.pairId;
+  targetPair.proxyTuiSlot.pairedChatId = chatId;
+  state.paired = true;
+  targetPair.codex.setPairedChat(chatId);
+  state.ready = targetPair.proxyTuiSlot.readiness === "ready";
+  log(`[${chatId}] claim_pair_for_chat: paired to "${targetPair.pairId}" (readiness=${targetPair.proxyTuiSlot.readiness})`);
+  emitToChat(state, systemMessage(state.ready ? "system_paired_ready_retroactive" : "system_paired_provisioning_retroactive", state.ready ? `\u2705 Retroactively paired with the right-pane Codex TUI on pair "${targetPair.pairId}". Replies will appear there; user typing in the TUI will be forwarded to you with an [IMPORTANT] prefix.` : `\u2705 Retroactively paired with the right-pane Codex TUI on pair "${targetPair.pairId}". Waiting for the shared thread to finish provisioning before replies can flow.`));
+  broadcastStatus();
+  sendProtocolMessage(ws, {
+    type: "pair_claimed",
+    requestId,
+    chatId,
+    pairId: targetPair.pairId
   });
 }
 async function attachClaude(ws, requestedChatId, requestedPairId, requestId) {

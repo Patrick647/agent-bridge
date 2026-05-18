@@ -822,6 +822,9 @@ function handleControlMessage(ws: ServerWebSocket<ControlSocketData>, raw: strin
     case "list_pairs":
       handleListPairs(ws, message);
       return;
+    case "claim_pair_for_chat":
+      handleClaimPairForChat(ws, message);
+      return;
   }
 }
 
@@ -1004,6 +1007,149 @@ function handleListPairs(
     type: "pair_list",
     requestId: message.requestId,
     pairs: result,
+  });
+}
+
+/**
+ * `claim_pair_for_chat` (2026-05-18): retroactively pair an existing
+ * isolated chat with a free proxy TUI slot.
+ *
+ * Use case: 8 Claude bridges attach to daemon BEFORE the proxy TUI is
+ * up — all go through isolated bootstrap. Then user starts
+ * `abg codex --via-proxy`, TUI takes a proxy slot, but the existing
+ * chats are already isolated (FIFO claim only fires at attach time,
+ * not retroactively). User wants ONE of those isolated chats to be
+ * the paired Claude for the new TUI — this command does that
+ * explicitly via `abg pairs claim CHAT_ID [--pair NAME]`.
+ *
+ * Constraints:
+ *  - Chat must exist + currently be isolated (state.paired === false)
+ *  - Target pair must be live + have a proxy slot + slot is unpaired
+ *  - If `pairId` omitted: claim first live + unpaired-slot pair (FIFO)
+ *
+ * Doesn't touch the chat's existing isolated `state.thread` — paired
+ * chats route through `homePair.codex.injectMessage` instead, so the
+ * old thread is harmless dormant state. Resource cleanup is daemon-
+ * lifetime bound.
+ */
+function handleClaimPairForChat(
+  ws: ServerWebSocket<ControlSocketData>,
+  message: Extract<ControlClientMessage, { type: "claim_pair_for_chat" }>,
+): void {
+  const { chatId, pairId, requestId } = message;
+
+  const state = chats.get(chatId);
+  if (!state) {
+    sendProtocolMessage(ws, {
+      type: "pair_claim_failed",
+      requestId,
+      chatId,
+      code: "CHAT_NOT_FOUND",
+      message: `No chat with chatId="${chatId}" is currently attached.`,
+    });
+    return;
+  }
+  if (state.paired) {
+    sendProtocolMessage(ws, {
+      type: "pair_claim_failed",
+      requestId,
+      chatId,
+      code: "CHAT_ALREADY_PAIRED",
+      message: `Chat "${chatId}" is already paired (homePairId=${state.homePairId}).`,
+    });
+    return;
+  }
+
+  // Pick target pair: explicit pairId (must be live + unpaired) or
+  // first live pair with unpaired proxy slot (FIFO).
+  let targetPair: PairState | undefined;
+  if (pairId) {
+    const candidate = pairs.get(pairId);
+    if (!candidate) {
+      sendProtocolMessage(ws, {
+        type: "pair_claim_failed",
+        requestId,
+        chatId,
+        code: "PAIR_NOT_FOUND",
+        message: `Pair "${pairId}" does not exist.`,
+      });
+      return;
+    }
+    if (!candidate.isLive) {
+      sendProtocolMessage(ws, {
+        type: "pair_claim_failed",
+        requestId,
+        chatId,
+        code: "PAIR_NOT_LIVE",
+        message: `Pair "${pairId}" is registered but not live (no codex app-server running).`,
+      });
+      return;
+    }
+    if (!candidate.proxyTuiSlot) {
+      sendProtocolMessage(ws, {
+        type: "pair_claim_failed",
+        requestId,
+        chatId,
+        code: "PAIR_BUSY",
+        message: `Pair "${pairId}" has no proxy TUI slot (no --via-proxy TUI attached).`,
+      });
+      return;
+    }
+    if (candidate.proxyTuiSlot.pairedChatId !== null) {
+      sendProtocolMessage(ws, {
+        type: "pair_claim_failed",
+        requestId,
+        chatId,
+        code: "PAIR_BUSY",
+        message: `Pair "${pairId}" is already paired with chatId="${candidate.proxyTuiSlot.pairedChatId}".`,
+      });
+      return;
+    }
+    targetPair = candidate;
+  } else {
+    // FIFO: first live pair with unpaired proxy slot.
+    for (const candidate of pairs.values()) {
+      if (!candidate.isLive) continue;
+      if (!candidate.proxyTuiSlot) continue;
+      if (candidate.proxyTuiSlot.pairedChatId !== null) continue;
+      targetPair = candidate;
+      break;
+    }
+    if (!targetPair) {
+      sendProtocolMessage(ws, {
+        type: "pair_claim_failed",
+        requestId,
+        chatId,
+        code: "NO_FREE_PAIR",
+        message: `No live pair with an unpaired proxy TUI slot is available. ` +
+          `Start a Codex TUI via \`abg codex --via-proxy [--pair NAME]\` first, ` +
+          `or pass an explicit \`--pair NAME\` to target a specific pair.`,
+      });
+      return;
+    }
+  }
+
+  // Effect the claim. Mirrors the FIFO claim path in attachClaude.
+  state.homePairId = targetPair.pairId;
+  targetPair.proxyTuiSlot!.pairedChatId = chatId;
+  state.paired = true;
+  targetPair.codex.setPairedChat(chatId);
+  state.ready = targetPair.proxyTuiSlot!.readiness === "ready";
+
+  log(`[${chatId}] claim_pair_for_chat: paired to "${targetPair.pairId}" (readiness=${targetPair.proxyTuiSlot!.readiness})`);
+  emitToChat(state, systemMessage(
+    state.ready ? "system_paired_ready_retroactive" : "system_paired_provisioning_retroactive",
+    state.ready
+      ? `✅ Retroactively paired with the right-pane Codex TUI on pair "${targetPair.pairId}". Replies will appear there; user typing in the TUI will be forwarded to you with an [IMPORTANT] prefix.`
+      : `✅ Retroactively paired with the right-pane Codex TUI on pair "${targetPair.pairId}". Waiting for the shared thread to finish provisioning before replies can flow.`,
+  ));
+  broadcastStatus();
+
+  sendProtocolMessage(ws, {
+    type: "pair_claimed",
+    requestId,
+    chatId,
+    pairId: targetPair.pairId,
   });
 }
 

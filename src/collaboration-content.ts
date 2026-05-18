@@ -103,6 +103,8 @@ const CODEX_IMPLEMENTS_AGENTS_MD = `\
 You are the **Implementer / Executor / Verifier** in a Codex-implements-Claude-reviews workflow.
 Another AI agent (Claude, by Anthropic) is available in a parallel session and owns design / review / git.
 
+> **AgentBridge IS a global \`abg\` CLI binary**, not a project-local source tree. Don't search the current project directory for an \`agentbridge\` or \`agentbridge-multi\` source — the tool is installed at \`/opt/homebrew/bin/abg\` (or your package manager's bin path). What lives in this project is just the collab content (CLAUDE.md / AGENTS.md / .agentbridge/config.json), not the bridge runtime itself.
+
 ### Fixed division of labor
 | Role | Owner | Notes |
 |---|---|---|

@@ -93,6 +93,11 @@ export async function runPairs(args: string[]): Promise<void> {
     case "destroy":
       await runPairsRm(subArgs);
       break;
+    case "claim":
+      // 2026-05-18: retroactively pair an existing isolated chat with
+      // a free proxy TUI slot.
+      await runPairsClaim(subArgs);
+      break;
     case "--help":
     case "-h":
       printPairsHelp();
@@ -225,6 +230,70 @@ async function runPairsRm(args: string[]): Promise<void> {
   console.log(`Pair "${pairId}" destroyed: ${parts.join("; ")}.`);
 }
 
+async function runPairsClaim(args: string[]): Promise<void> {
+  // Parse: CHAT_ID + optional --pair NAME
+  let chatId: string | undefined;
+  let pairId: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--pair") {
+      if (i + 1 >= args.length) {
+        console.error(`Error: --pair requires a value.`);
+        process.exit(1);
+      }
+      pairId = args[i + 1];
+      i++;
+      continue;
+    }
+    if (a.startsWith("--pair=")) {
+      pairId = a.slice("--pair=".length);
+      continue;
+    }
+    if (chatId === undefined) {
+      chatId = a;
+      continue;
+    }
+    console.error(`Error: unexpected extra argument "${a}". Usage: abg pairs claim CHAT_ID [--pair NAME]`);
+    process.exit(1);
+  }
+  if (!chatId) {
+    console.error(`Error: missing CHAT_ID.`);
+    console.error(`Usage: abg pairs claim CHAT_ID [--pair NAME]`);
+    console.error(`Find available chatIds via \`abg status\` — look under "isolated:" in pairs section.`);
+    process.exit(1);
+  }
+  if (pairId && !isValidPairName(pairId)) {
+    console.error(`Error: --pair value "${pairId}" is invalid.`);
+    process.exit(1);
+  }
+
+  const reqId = `cli-pairs-claim-${Date.now()}`;
+  let response: any;
+  try {
+    response = await controlWsRequest<
+      { type: "claim_pair_for_chat"; requestId: string; chatId: string; pairId?: string },
+      any
+    >(
+      CONTROL_PORT_DEFAULT,
+      { type: "claim_pair_for_chat", requestId: reqId, chatId, ...(pairId ? { pairId } : {}) },
+      (msg): msg is any => {
+        return msg && (msg.type === "pair_claimed" || msg.type === "pair_claim_failed") && msg.requestId === reqId;
+      },
+    );
+  } catch (err: any) {
+    console.error(`pairs claim failed: ${err?.message ?? err}`);
+    process.exit(1);
+  }
+
+  if (response.type === "pair_claim_failed") {
+    console.error(`Pair claim failed (${response.code}): ${response.message}`);
+    process.exit(1);
+  }
+
+  console.log(`✅ Chat "${response.chatId}" retroactively paired with pair "${response.pairId}".`);
+  console.log(`   Verify with \`abg status\` — that chat should now show under "paired:" in pairs section.`);
+}
+
 function printPairsHelp(): void {
   console.log(`
 AgentBridge pair management
@@ -235,11 +304,16 @@ Usage:
   abg pairs rm NAME [--forget] [--force]
                                      # destroy a pair (and optionally remove
                                      # its registry entry)
+  abg pairs claim CHAT_ID [--pair NAME]
+                                     # retroactively pair an existing isolated
+                                     # chat with a free proxy TUI slot
+                                     # (find CHAT_IDs via \`abg status\`)
 
 Flags:
   --forget   Remove the registry entry so a future \`ensure_pair\` re-allocates
              from scratch (use after PAIR_PORTS_BUSY to release stale ports).
   --force    Tear down the pair even if it has a paired Claude. Without
              --force, paired-live pairs return PAIR_BUSY_NOT_FORCED.
+  --pair NAME  (claim only) target a specific pair instead of FIFO-first-free.
 `.trim());
 }

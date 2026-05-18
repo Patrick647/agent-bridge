@@ -146,7 +146,14 @@ export type ControlClientMessage =
   // STM v2.3 §D6 P3 — pair management API.
   | { type: "ensure_pair"; requestId: string; pairId: string }
   | { type: "destroy_pair"; requestId: string; pairId: string; forget?: boolean; force?: boolean }
-  | { type: "list_pairs"; requestId: string };
+  | { type: "list_pairs"; requestId: string }
+  // 2026-05-18: retroactive pair claim. Attach-time FIFO claim only
+  // fires when a Claude attaches AFTER a proxy TUI slot is unpaired.
+  // If chats attached BEFORE the TUI came up, they're stuck isolated.
+  // `claim_pair_for_chat` lets a user (via `abg pairs claim CHAT_ID
+  // [--pair NAME]`) explicitly pair an existing isolated chat with a
+  // free proxy slot.
+  | { type: "claim_pair_for_chat"; requestId: string; chatId: string; pairId?: string };
 
 export type ControlServerMessage =
   | { type: "codex_to_claude"; chatId?: string; message: BridgeMessage }
@@ -202,6 +209,20 @@ export type ControlServerMessage =
       code: PairErrorCode;
       message: string;
       details?: PairErrorDetails;
+    }
+  // 2026-05-18: claim_pair_for_chat result.
+  | {
+      type: "pair_claimed";
+      requestId: string;
+      chatId: string;
+      pairId: string;
+    }
+  | {
+      type: "pair_claim_failed";
+      requestId: string;
+      chatId: string;
+      code: "CHAT_NOT_FOUND" | "CHAT_ALREADY_PAIRED" | "NO_FREE_PAIR" | "PAIR_NOT_LIVE" | "PAIR_NOT_FOUND" | "PAIR_BUSY";
+      message: string;
     };
 
 /** WebSocket close code sent by the daemon when a newer Claude session replaces the current one. */
