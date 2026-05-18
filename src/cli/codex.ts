@@ -268,6 +268,19 @@ function extractCliFlags(args: string[]): {
 export async function runCodex(rawArgs: string[]) {
   const { mode, pairId, sandbox, rest: args } = extractCliFlags(rawArgs);
 
+  // Single daemon-state probe used for two warnings below (sandbox-ignored
+  // + direct-mode-with-bridge-attached). Avoids double-probing.
+  const controlPort = parseInt(process.env.AGENTBRIDGE_CONTROL_PORT ?? "4502", 10);
+  let daemonAlreadyUp = false;
+  let healthzData: any = null;
+  try {
+    const res = await fetch(`http://127.0.0.1:${controlPort}/healthz`);
+    if (res.ok) {
+      daemonAlreadyUp = true;
+      healthzData = await res.json();
+    }
+  } catch { /* daemon not reachable, leave defaults */ }
+
   // Pass sandbox to daemon (read at codex app-server spawn time). Set BEFORE
   // ensureRunning() so the env is in place if the daemon spawn happens now.
   // Limitation surfaced (Codex batch review 2026-05-17 msg ..._184): if a
@@ -275,18 +288,32 @@ export async function runCodex(rawArgs: string[]) {
   // time — this export is a no-op for that daemon. Warn the user instead
   // of silently dropping the flag.
   if (sandbox) {
-    const probeLifecycle = new DaemonLifecycle({
-      stateDir: new StateDirResolver(),
-      controlPort: parseInt(process.env.AGENTBRIDGE_CONTROL_PORT ?? "4502", 10),
-      log: () => { /* silent probe — we only care about the boolean result */ },
-    });
-    const daemonAlreadyUp = await probeLifecycle.isHealthy();
     if (daemonAlreadyUp) {
       console.warn(`[agentbridge] Warning: --sandbox=${sandbox} ignored — daemon is already running.`);
       console.warn(`[agentbridge]   The codex app-server sandbox was fixed at daemon spawn time.`);
       console.warn(`[agentbridge]   To switch sandboxes: \`abg kill && abg codex --sandbox=${sandbox}\``);
     } else {
       process.env.AGENTBRIDGE_CODEX_SANDBOX = sandbox;
+    }
+  }
+
+  // UX hint (2026-05-18): warn when user starts Codex in `--direct` mode
+  // (the default) but Claude bridges are already attached to this daemon.
+  // Direct mode connects Codex TUI straight to codex app-server (port
+  // 4500), bypassing the bridge proxy (port 4501). Claude bridges
+  // attached to the daemon see no agentMessage events from a direct-mode
+  // TUI — multi-agent collaboration silently doesn't work. This warning
+  // surfaces the misconfiguration BEFORE spawning so the user can
+  // cancel + retry with --via-proxy. Non-blocking (warning, not error).
+  if (mode === "direct" && daemonAlreadyUp && healthzData) {
+    const attachedClaudeCount = healthzData.attachedClaudeCount ?? 0;
+    if (attachedClaudeCount > 0) {
+      console.warn(`[agentbridge] Note: --direct mode (the default) bypasses the bridge proxy.`);
+      console.warn(`[agentbridge]   ${attachedClaudeCount} Claude bridge(s) are currently attached to this daemon.`);
+      console.warn(`[agentbridge]   Codex TUI output in direct mode is NOT forwarded to those Claudes.`);
+      console.warn(`[agentbridge]   For multi-agent collaboration use:  abg codex --via-proxy${pairId !== "default" ? ` --pair ${pairId}` : ""}`);
+      console.warn(`[agentbridge]   (Continuing in direct mode — Ctrl+C now if you wanted bridge interception.)`);
+      console.warn(``);
     }
   }
 
@@ -327,7 +354,6 @@ export async function runCodex(rawArgs: string[]) {
   const stateDir = new StateDirResolver();
   const configService = new ConfigService();
   const config = configService.loadOrDefault();
-  const controlPort = parseInt(process.env.AGENTBRIDGE_CONTROL_PORT ?? "4502", 10);
 
   const lifecycle = new DaemonLifecycle({
     stateDir,

@@ -46,6 +46,12 @@ async function main() {
       const { runPairs } = await import("./cli/pairs");
       await runPairs(restArgs);
       break;
+    case "status":
+      // 2026-05-18: human-readable /healthz dump (alternative to
+      // `curl :4502/healthz | python -m json.tool`).
+      const { runStatus } = await import("./cli/status");
+      await runStatus(restArgs);
+      break;
     case "--help":
     case "-h":
     case undefined:
@@ -79,6 +85,7 @@ Commands:
                     Use --pair NAME to target a specific pair (STM v2.3)
   pairs <subcmd>    Manage shared-thread pairs (STM v2.3)
                     Subcommands: ls / rm NAME [--forget] [--force]
+  status [--json]   Human-readable daemon health + per-pair snapshot
   kill              Force kill all AgentBridge processes
 
 Options:
@@ -90,9 +97,12 @@ Examples:
   abg init --workflow codex-implements     # Init with Codex-implements / Claude-reviews preset
   abg claude                               # Start Claude Code
   abg claude --resume                      # Start Claude Code and resume session
-  abg codex                                # Start Codex TUI
+  abg codex                                # Start Codex TUI (direct mode — bypasses bridge)
+  abg codex --via-proxy                    # Start Codex TUI THROUGH bridge proxy (needed
+                                           #   for multi-agent collaboration)
   abg codex --model o3                     # Start Codex with specific model
   abg codex --sandbox workspace-write      # Codex with write access (preset-friendly)
+  abg status                               # Quick daemon + pair status check
   abg kill                                 # Emergency: kill all processes
 `.trim());
 }
