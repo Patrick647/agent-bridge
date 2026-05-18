@@ -1432,17 +1432,16 @@ async function attachClaude(
       `✅ Your Codex thread is ready (threadId=${threadId}). You can now send messages via the reply tool.`));
     broadcastStatus();
   } catch (err: any) {
-    log(`ClaudeThread bootstrap failed for chatId=${chatId}: ${err?.message ?? err}`);
-    // Codex review msg ..._274: same guard — if the chat was claimed
-    // or replaced during bootstrap, the failure is irrelevant to the
-    // now-paired chat (its transport is the proxy slot, not this
-    // closed thread). Reaping it here would delete a live paired
-    // chat. The forced-claim path explicitly closed the old thread,
-    // which is what triggered this catch.
+    // Codex review msg ..._281: check stale-guard FIRST so a forced-
+    // claim-triggered close doesn't leave a misleading
+    // "ClaudeThread bootstrap failed" log line in production logs.
+    // When paired/re-homed, this catch fired because the forced claim
+    // closed the old thread on purpose — not a real failure.
     if (chats.get(chatId) !== state || state.paired) {
-      log(`ClaudeThread bootstrap failed for chatId=${chatId} but state was re-homed/paired — dropping late failure handling`);
+      log(`[${chatId}] late isolated bootstrap rejected (${err?.message ?? err}) — chat was claimed/re-homed mid-bootstrap, dropping`);
       return;
     }
+    log(`ClaudeThread bootstrap failed for chatId=${chatId}: ${err?.message ?? err}`);
     emitToChat(state, systemMessage("system_thread_failed",
       `❌ Failed to provision Codex thread: ${err?.message ?? err}. Reconnect to retry.`));
     // Bug fix (2026-05-17): reap the half-initialized chat so the

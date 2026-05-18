@@ -3574,11 +3574,11 @@ async function attachClaude(ws, requestedChatId, requestedPairId, requestId) {
     emitToChat(state, systemMessage("system_thread_ready", `\u2705 Your Codex thread is ready (threadId=${threadId}). You can now send messages via the reply tool.`));
     broadcastStatus();
   } catch (err) {
-    log(`ClaudeThread bootstrap failed for chatId=${chatId}: ${err?.message ?? err}`);
     if (chats.get(chatId) !== state || state.paired) {
-      log(`ClaudeThread bootstrap failed for chatId=${chatId} but state was re-homed/paired \u2014 dropping late failure handling`);
+      log(`[${chatId}] late isolated bootstrap rejected (${err?.message ?? err}) \u2014 chat was claimed/re-homed mid-bootstrap, dropping`);
       return;
     }
+    log(`ClaudeThread bootstrap failed for chatId=${chatId}: ${err?.message ?? err}`);
     emitToChat(state, systemMessage("system_thread_failed", `\u274C Failed to provision Codex thread: ${err?.message ?? err}. Reconnect to retry.`));
     reapChatState(state, `bootstrap failed: ${err?.message ?? err}`);
   }
