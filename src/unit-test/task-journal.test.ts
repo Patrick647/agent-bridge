@@ -81,6 +81,18 @@ describe("task-journal: state machine + transitions", () => {
     })).toThrow(/must differ/);
   });
 
+  test("assign rejects implementer matching existing reviewer (SAME_ROLE)", () => {
+    // Codex review msg ..._302 polish: assign path also guarded.
+    const j = startTask(projectRoot, "deferred", { reviewer: "codex" });
+    expect(j.state).toBe("drafting");
+    expect(() => assignImplementer(projectRoot, j.taskId, "codex"))
+      .toThrow(/matches existing reviewer/);
+    // Different role still works.
+    const j2 = assignImplementer(projectRoot, j.taskId, "claude");
+    expect(j2.implementer).toBe("claude");
+    expect(j2.state).toBe("implementing");
+  });
+
   // ── Codex review msg ..._296 contract regression tests ───────────────
 
   test("submit requires --as when implementer is set", () => {

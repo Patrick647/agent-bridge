@@ -243,6 +243,17 @@ export function assignImplementer(
       `Cannot assign implementer in state "${journal.state}"`,
     );
   }
+  // Codex review msg ..._302 polish: assign path also needs same-role
+  // guard. Pre-fix `assign --implementer codex` on a task with
+  // reviewer=codex would write a stuck config — later verdict would be
+  // blocked by SELF_REVIEW. Reject upfront instead, mirror the
+  // startTask same-role check.
+  if (journal.reviewer && journal.reviewer === implementer) {
+    throw new TaskJournalError(
+      "SAME_ROLE",
+      `implementer "${implementer}" matches existing reviewer; the two must differ (mutual review).`,
+    );
+  }
   journal.implementer = implementer;
   if (journal.state === "drafting") {
     if (!isValidTransition(journal.state, "implementing")) {
