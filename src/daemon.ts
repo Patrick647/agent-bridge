@@ -106,6 +106,16 @@ interface ProxyTuiSlot {
   pairReapTimer: ReturnType<typeof setTimeout> | null;
 }
 
+// Diagnostic snapshot (2026-05-18): cwd + sandbox env at daemon module
+// load — captured here so `currentStatus()` can surface them via /healthz
+// for `abg status` + `abg codex` pre-flight UX. Codex app-server children
+// inherit cwd via spawn defaults; --sandbox MODE is read at CodexAdapter
+// spawn time from process.env.AGENTBRIDGE_CODEX_SANDBOX.
+const DAEMON_SPAWN_CWD = (() => {
+  try { return process.cwd(); } catch { return undefined; }
+})();
+const DAEMON_CODEX_SANDBOX = process.env.AGENTBRIDGE_CODEX_SANDBOX ?? null;
+
 const stateDir = new StateDirResolver();
 stateDir.ensure();
 // Performance fix (2026-05-17 P0): async file logger declared up here so
@@ -1925,6 +1935,13 @@ function currentStatus(): DaemonStatus {
   return {
     bridgeReady: anyCanReply || (defaultLive && codexBootstrapped),
     pid: process.pid,
+    // Diagnostic surfaces (2026-05-18): cwd + sandbox captured at daemon
+    // spawn. CodexAdapter inherits cwd + threads --sandbox MODE to its
+    // codex app-server child. These let users see, without log-diving,
+    // whether their `--sandbox` flag took effect and which directory
+    // Codex's TUI will actually run in.
+    daemonCwd: DAEMON_SPAWN_CWD,
+    codexSandbox: DAEMON_CODEX_SANDBOX,
     // URLs are config: always populated from the default pair's registered ports.
     proxyUrl: codex.proxyUrl,
     appServerUrl: codex.appServerUrl,

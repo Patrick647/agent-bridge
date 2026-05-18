@@ -95,6 +95,7 @@ Options:
 Examples:
   abg init                                 # First-time setup (default collab content)
   abg init --workflow codex-implements     # Init with Codex-implements / Claude-reviews preset
+  abg init --list-workflows                # List all available workflow presets
   abg claude                               # Start Claude Code
   abg claude --resume                      # Start Claude Code and resume session
   abg codex                                # Start Codex TUI (direct mode — bypasses bridge)

@@ -40,6 +40,18 @@ export async function runStatus(rawArgs: string[]): Promise<void> {
   console.log(`  pid:           ${data.pid}`);
   console.log(`  control port:  127.0.0.1:${controlPort}`);
   console.log(`  bridge ready:  ${data.bridgeReady ? "✅ yes" : "❌ no"}`);
+  if (data.daemonCwd !== undefined) {
+    console.log(`  daemon cwd:    ${data.daemonCwd}`);
+    console.log(`                 (codex app-server inherits this — Codex TUI's "directory" matches)`);
+  }
+  if (data.codexSandbox !== undefined) {
+    if (data.codexSandbox === null) {
+      console.log(`  codex sandbox: <default (read-only)>`);
+      console.log(`                 (start daemon with \`abg codex --sandbox workspace-write\` to enable writes)`);
+    } else {
+      console.log(`  codex sandbox: ${data.codexSandbox}`);
+    }
+  }
   console.log(``);
   console.log(`Top-level aggregate (any live pair)`);
   console.log(`  TUI connected:      ${data.tuiConnected ? "✅" : "✗"}`);

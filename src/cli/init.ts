@@ -51,7 +51,31 @@ function parseInitFlags(args: string[]): { workflow: WorkflowPreset } {
   return { workflow };
 }
 
+/** Short user-visible description per workflow preset. Keep these 1-line. */
+const WORKFLOW_DESCRIPTIONS: Record<WorkflowPreset, string> = {
+  "default": "generic 'propose split per task' content; no fixed role assignment",
+  "codex-implements": "fixed roles: Codex implements + verifies; Claude designs + reviews + handles git",
+};
+
+function printWorkflowList(): void {
+  console.log(`Available workflow presets for \`abg init --workflow NAME\`:\n`);
+  for (const preset of VALID_WORKFLOW_PRESETS) {
+    console.log(`  ${preset}`);
+    console.log(`    ${WORKFLOW_DESCRIPTIONS[preset] ?? "(no description)"}`);
+    console.log("");
+  }
+  console.log(`Run \`abg init --workflow NAME\` in your project directory to apply.`);
+  console.log(`Re-running with a different preset overwrites the <!-- AgentBridge:* --> block in CLAUDE.md / AGENTS.md.`);
+}
+
 export async function runInit(args: string[] = []) {
+  // List-workflows shortcut: print available presets and exit, don't
+  // actually run init. (2026-05-18.)
+  if (args.includes("--list-workflows") || args.includes("--list-presets")) {
+    printWorkflowList();
+    return;
+  }
+
   const { workflow } = parseInitFlags(args);
   console.log(`AgentBridge Init${workflow === "default" ? "" : ` (workflow: ${workflow})`}\n`);
 

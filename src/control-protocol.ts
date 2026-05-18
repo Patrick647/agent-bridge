@@ -39,6 +39,16 @@ export interface DaemonStatus {
    * bootstrapped. Aggregate semantics in v2.3+. */
   bridgeReady: boolean;
   pid: number;
+  /** 2026-05-18: daemon's working directory at spawn time. Codex app-server
+   * children inherit this cwd. When users see Codex TUI's `directory:`
+   * header showing a stale path, this is the value to check. null only
+   * if daemon couldn't read cwd at startup (shouldn't happen). */
+  daemonCwd?: string;
+  /** 2026-05-18: value of `AGENTBRIDGE_CODEX_SANDBOX` env at daemon spawn,
+   * propagated to codex app-server via --sandbox MODE. null when not
+   * set (daemon spawned without --sandbox flag), in which case codex
+   * uses its own default (currently read-only). */
+  codexSandbox?: string | null;
   /**
    * Top-level fields. URLs are default-pair config (back-compat).
    * Runtime fields (`tuiConnected`, `proxyTuiConnected`, `threadId`)

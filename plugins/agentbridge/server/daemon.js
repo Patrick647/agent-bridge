@@ -2588,6 +2588,14 @@ class PairRegistry {
 var CLOSE_CODE_REPLACED = 4001;
 
 // src/daemon.ts
+var DAEMON_SPAWN_CWD = (() => {
+  try {
+    return process.cwd();
+  } catch {
+    return;
+  }
+})();
+var DAEMON_CODEX_SANDBOX = process.env.AGENTBRIDGE_CODEX_SANDBOX ?? null;
 var stateDir = new StateDirResolver;
 stateDir.ensure();
 var daemonLogger = getAsyncFileLogger(stateDir.logFile);
@@ -3816,6 +3824,8 @@ function currentStatus() {
   return {
     bridgeReady: anyCanReply || defaultLive && codexBootstrapped,
     pid: process.pid,
+    daemonCwd: DAEMON_SPAWN_CWD,
+    codexSandbox: DAEMON_CODEX_SANDBOX,
     proxyUrl: codex.proxyUrl,
     appServerUrl: codex.appServerUrl,
     tuiConnected: anyTuiConnected,

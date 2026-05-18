@@ -317,6 +317,25 @@ export async function runCodex(rawArgs: string[]) {
     }
   }
 
+  // UX hint (2026-05-18): warn when daemon's spawn cwd differs from the
+  // user's current cwd. Codex app-server inherits daemon spawn cwd —
+  // user sees "directory: /old/path" in Codex TUI header even though
+  // they `cd`'d to a new location before running `abg codex`. Common
+  // foot-gun: daemon started days ago in some dir, today user wants
+  // Codex in a different project.
+  if (daemonAlreadyUp && healthzData?.daemonCwd) {
+    const daemonCwd = healthzData.daemonCwd as string;
+    const userCwd = process.cwd();
+    if (daemonCwd !== userCwd) {
+      console.warn(`[agentbridge] Note: Codex TUI will run in the DAEMON's spawn cwd, NOT your current cwd.`);
+      console.warn(`[agentbridge]   daemon cwd:   ${daemonCwd}`);
+      console.warn(`[agentbridge]   your cwd:     ${userCwd}`);
+      console.warn(`[agentbridge]   If you want Codex to run in your current cwd:`);
+      console.warn(`[agentbridge]     abg kill && cd ${JSON.stringify(userCwd)} && abg codex${mode === "proxy" ? " --via-proxy" : ""}${pairId !== "default" ? ` --pair ${pairId}` : ""}`);
+      console.warn(``);
+    }
+  }
+
   // STM v2.3 §D1 P4: CLI-side validation of --pair NAME. Reject locally
   // with a clear message before any daemon round-trip — the daemon's
   // INVALID_PAIR_NAME would surface a less ergonomic generic message.
