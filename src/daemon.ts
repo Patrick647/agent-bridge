@@ -974,7 +974,10 @@ function handleListPairs(
       tuiConnected: pair.tuiConnectionState.snapshot().tuiConnected,
       proxyTuiConnected: pair.proxyTuiSlot !== null,
       pairedChatId: pair.proxyTuiSlot?.pairedChatId ?? null,
-      threadId: pair.codex.activeThreadId,
+      // Codex re-pass (msg ..._253): null out activeThreadId on non-live
+      // pairs to avoid reporting a stale thread id from a destroyed/
+      // crashed pair. CodexAdapter doesn't clear activeThreadId on stop.
+      threadId: pair.isLive ? pair.codex.activeThreadId : null,
       attachedClaudes: [...chats.values()]
         .filter((s) => s.homePairId === pair.pairId)
         .map((s) => ({ chatId: s.chatId, paired: s.paired })),
@@ -1752,8 +1755,15 @@ function currentStatus(): DaemonStatus {
   // when multiple non-default pairs have threads the top-level field
   // is genuinely ambiguous, return null and force callers to read
   // `pairs[].threadId`. (Codex review msg ..._248.)
+  //
+  // Codex re-pass (msg ..._253): only read default's activeThreadId
+  // when default is still live. `CodexAdapter.stop()/exit` does not
+  // clear `activeThreadId`, so a dead default would otherwise report
+  // a stale dead-thread id AND suppress the non-default fallback.
   const defaultPair = pairs.get("default");
-  const defaultThreadId = defaultPair?.codex.activeThreadId ?? null;
+  const defaultThreadId = (defaultPair?.isLive === true)
+    ? (defaultPair.codex.activeThreadId ?? null)
+    : null;
   const nonDefaultThreadIds = livePairs
     .filter((p) => p.pairId !== "default")
     .map((p) => p.codex.activeThreadId)
@@ -1792,7 +1802,8 @@ function currentStatus(): DaemonStatus {
       tuiConnected: pair.tuiConnectionState.snapshot().tuiConnected,
       proxyTuiConnected: pair.proxyTuiSlot !== null,
       pairedChatId: pair.proxyTuiSlot?.pairedChatId ?? null,
-      threadId: pair.codex.activeThreadId,
+      // Codex re-pass (msg ..._253): see status-array comment above.
+      threadId: pair.isLive ? pair.codex.activeThreadId : null,
       attachedClaudes: [...chats.values()]
         .filter((s) => s.homePairId === pair.pairId)
         .map((s) => ({ chatId: s.chatId, paired: s.paired })),

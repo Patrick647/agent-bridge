@@ -3157,7 +3157,7 @@ function handleListPairs(ws, message) {
       tuiConnected: pair.tuiConnectionState.snapshot().tuiConnected,
       proxyTuiConnected: pair.proxyTuiSlot !== null,
       pairedChatId: pair.proxyTuiSlot?.pairedChatId ?? null,
-      threadId: pair.codex.activeThreadId,
+      threadId: pair.isLive ? pair.codex.activeThreadId : null,
       attachedClaudes: [...chats.values()].filter((s) => s.homePairId === pair.pairId).map((s) => ({ chatId: s.chatId, paired: s.paired }))
     });
   }
@@ -3702,7 +3702,7 @@ function currentStatus() {
   const anyProxyTuiConnected = livePairs.some((p) => p.proxyTuiSlot !== null);
   const anyCanReply = livePairs.some((p) => p.tuiConnectionState.canReply());
   const defaultPair = pairs.get("default");
-  const defaultThreadId = defaultPair?.codex.activeThreadId ?? null;
+  const defaultThreadId = defaultPair?.isLive === true ? defaultPair.codex.activeThreadId ?? null : null;
   const nonDefaultThreadIds = livePairs.filter((p) => p.pairId !== "default").map((p) => p.codex.activeThreadId).filter((t) => !!t);
   const aggregateThreadId = defaultThreadId ?? (nonDefaultThreadIds.length === 1 ? nonDefaultThreadIds[0] : null);
   const defaultLive = pairs.get("default")?.isLive === true;
@@ -3724,7 +3724,7 @@ function currentStatus() {
       tuiConnected: pair.tuiConnectionState.snapshot().tuiConnected,
       proxyTuiConnected: pair.proxyTuiSlot !== null,
       pairedChatId: pair.proxyTuiSlot?.pairedChatId ?? null,
-      threadId: pair.codex.activeThreadId,
+      threadId: pair.isLive ? pair.codex.activeThreadId : null,
       attachedClaudes: [...chats.values()].filter((s) => s.homePairId === pair.pairId).map((s) => ({ chatId: s.chatId, paired: s.paired }))
     }))
   };

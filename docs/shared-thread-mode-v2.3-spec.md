@@ -354,18 +354,26 @@ D5 changes (filesystem layout, fake-daemon fixtures, kill walker) land in **P3**
 
 ```typescript
 interface DaemonStatus {
+  // Aggregate: any live pair can reply (OR default is live AND bootstrapped).
   bridgeReady: boolean;
   pid: number;
-  // Backwards-compat fields populated from `pairs.default` (or null if no default pair live):
-  appServerUrl: string | null;
-  proxyUrl: string | null;
+  // URLs are default-pair config (back-compat — always populated from
+  // default pair's registered ports).
+  appServerUrl: string;
+  proxyUrl: string;
+  // Runtime fields (audit D1 / 2026-05-18 amendment above):
+  //  - `tuiConnected` / `proxyTuiConnected` aggregate over live pairs
+  //    (true if ANY live pair has the corresponding state).
+  //  - `threadId` is default's if default is live and has a thread,
+  //    else the SOLE non-default live pair's thread, else null
+  //    (ambiguous when multiple non-default pairs have threads).
   tuiConnected: boolean;
   proxyTuiConnected: boolean;
   threadId: string | null;
-  // New aggregate fields:
-  attachedClaudeCount: number;            // total across all pairs + isolated
-  queuedMessageCount: number;             // total across all chats
-  pairs: PairStatus[];                    // detailed per-pair view
+  // Aggregate counts across all pairs + chats:
+  attachedClaudeCount: number;
+  queuedMessageCount: number;
+  pairs: PairStatus[];                    // canonical per-pair view
 }
 
 interface PairStatus {
