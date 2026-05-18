@@ -107,9 +107,9 @@ Another AI agent (Codex, by OpenAI) is available in a parallel session on this m
 
 3. **Plan + brief** → write the plan in chat, send to Codex via \`reply\`: scope, acceptance criteria, file pointers, what NOT to do. Include the task-id so Codex knows which journal to submit against.
 
-4. **Wait for Codex's submit** → don't poll. Codex calls \`abg task submit --output "..." --commit <sha> --as codex\` when done. Check progress with \`abg task status\`.
+4. **Wait for Codex's submit** → don't poll. Codex calls \`abg task submit --output "..." --as codex\` when done (optionally with \`--commit <sha>\` if Codex made one — usually it didn't, since Codex doesn't own git). Check progress with \`abg task status\`.
 
-5. **Read the actual diff** → \`git diff\` against Codex's reported commit. Do NOT trust the summary in submit output; verify against the actual change.
+5. **Read the actual diff** → If a \`--commit\` SHA was reported, \`git diff <sha>~ <sha>\`. Otherwise \`git status\` + \`git diff\` (working tree). Do NOT trust the summary in submit output; verify against the actual change.
 
 6. **Review independently + record verdict via CLI**:
    - For NEED_REVISION: \`abg task verdict NEED_REVISION --as claude --must-fix "specific item 1" --must-fix "..."\`
@@ -174,11 +174,11 @@ AgentBridge is a **transparent proxy** on your side. You do **not** have a tool 
 
 3. **Submit your iteration via the CLI** (this is the enforced contract):
    \`\`\`
-   abg task submit --output "<short summary: what changed, what tested, what's NOT covered>" --commit <sha> --as codex
+   abg task submit --output "<short summary: what changed, what tested, what's NOT covered>" --as codex
    \`\`\`
    - Must pass \`--as codex\` to claim implementer role (CLI rejects without it)
-   - Include \`--commit <sha>\` if you made one; if you don't have git access, just describe the change as output
-   - Output should be tight — Claude reads it to decide whether to dig into the diff. Lie-resistant; Claude verifies against actual diff anyway
+   - \`--commit <sha>\` is **optional** — usually you don't have a SHA because Claude owns git. If you happened to make a commit (rare), include it. Otherwise the working-tree diff is what Claude reviews.
+   - Output should be tight — Claude reads it to decide whether to dig into the diff. Lie-resistant; Claude verifies against actual diff anyway.
 
 4. **Wait for Claude's verdict** → Claude calls \`abg task verdict ...\`. Poll with \`abg task status\` to see decision. Three outcomes:
    - **GO**: task approved (terminal). Tell user "ready for commit" — Claude handles git.

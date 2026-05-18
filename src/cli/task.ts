@@ -20,6 +20,7 @@
 import {
   startTask,
   assignImplementer,
+  setReviewer,
   submitIteration,
   recordVerdict,
   abandonTask,
@@ -153,13 +154,13 @@ function runAssign(args: string[], projectRoot: string): void {
   }
   const id = resolveTaskId(taskId, projectRoot);
   try {
-    const journal = assignImplementer(projectRoot, id, implementer);
-    if (reviewer && !journal.reviewer) {
-      // Update reviewer via direct edit (no dedicated transition needed).
-      journal.reviewer = reviewer;
-      // Re-write through public path so updatedAt + markdown refresh.
-      const { writeJournal } = require("../task-journal");
-      writeJournal(projectRoot, journal);
+    let journal = assignImplementer(projectRoot, id, implementer);
+    if (reviewer) {
+      // Codex review msg ..._308: route through setReviewer() so
+      // SAME_ROLE / REVIEWER_ALREADY_SET checks run. Pre-fix CLI wrote
+      // reviewer directly, bypassing the contract — `--implementer X
+      // --reviewer X` could create a stuck task.
+      journal = setReviewer(projectRoot, id, reviewer);
     }
     console.log(`✅ Task ${id} assigned to ${implementer}${reviewer ? `, reviewer ${reviewer}` : ""}`);
     console.log(`   State: ${journal.state}`);

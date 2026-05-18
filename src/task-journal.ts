@@ -230,6 +230,41 @@ export function startTask(
   return journal;
 }
 
+/**
+ * Set the reviewer for a task. Enforces SAME_ROLE check against the
+ * existing implementer so we cannot create a stuck task via the
+ * "assign then set reviewer" CLI path. (Codex review msg ..._308.)
+ */
+export function setReviewer(
+  projectRoot: string,
+  taskId: string,
+  reviewer: AgentRole,
+): TaskJournal {
+  const journal = readJournal(projectRoot, taskId);
+  if (!journal) throw new TaskJournalError("TASK_NOT_FOUND", `Task ${taskId} not found`);
+  if (isTerminal(journal.state)) {
+    throw new TaskJournalError(
+      "INVALID_STATE",
+      `Cannot set reviewer in terminal state "${journal.state}"`,
+    );
+  }
+  if (journal.reviewer && journal.reviewer !== reviewer) {
+    throw new TaskJournalError(
+      "REVIEWER_ALREADY_SET",
+      `Task reviewer is already "${journal.reviewer}"; refusing to overwrite with "${reviewer}". Abandon the task and start fresh if you need to change roles.`,
+    );
+  }
+  if (journal.implementer && journal.implementer === reviewer) {
+    throw new TaskJournalError(
+      "SAME_ROLE",
+      `reviewer "${reviewer}" matches existing implementer; the two must differ (mutual review).`,
+    );
+  }
+  journal.reviewer = reviewer;
+  writeJournal(projectRoot, journal);
+  return journal;
+}
+
 export function assignImplementer(
   projectRoot: string,
   taskId: string,

@@ -93,6 +93,32 @@ describe("task-journal: state machine + transitions", () => {
     expect(j2.state).toBe("implementing");
   });
 
+  test("setReviewer enforces SAME_ROLE + REVIEWER_ALREADY_SET", async () => {
+    // Codex review msg ..._308: CLI path `assign --implementer X --reviewer X`
+    // used to write reviewer directly after assignImplementer, bypassing
+    // SAME_ROLE. Now routes through setReviewer with the same guard.
+    const { setReviewer } = await import("../task-journal");
+
+    const j = startTask(projectRoot, "guard reviewer");
+    assignImplementer(projectRoot, j.taskId, "codex");
+
+    // SAME_ROLE rejection.
+    expect(() => setReviewer(projectRoot, j.taskId, "codex"))
+      .toThrow(/matches existing implementer/);
+
+    // Different role succeeds.
+    const j2 = setReviewer(projectRoot, j.taskId, "claude");
+    expect(j2.reviewer).toBe("claude");
+
+    // REVIEWER_ALREADY_SET on overwrite attempt with different role.
+    expect(() => setReviewer(projectRoot, j.taskId, "codex"))
+      .toThrow(/already.*"claude".*refusing to overwrite/i);
+
+    // Idempotent set with same value succeeds (no-op-ish).
+    const j3 = setReviewer(projectRoot, j.taskId, "claude");
+    expect(j3.reviewer).toBe("claude");
+  });
+
   // ── Codex review msg ..._296 contract regression tests ───────────────
 
   test("submit requires --as when implementer is set", () => {
