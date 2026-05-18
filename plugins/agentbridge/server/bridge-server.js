@@ -14268,8 +14268,8 @@ class DaemonLifecycle {
       return;
     }
     try {
-      this.launch();
-      await this.waitForReady();
+      const daemonProc = this.launch();
+      await this.awaitReadyOrFailure(daemonProc);
     } finally {
       this.releaseLock();
     }
@@ -14371,7 +14371,27 @@ class DaemonLifecycle {
       detached: true,
       stdio: "ignore"
     });
+    daemonProc.on("error", () => {});
     daemonProc.unref();
+    return daemonProc;
+  }
+  async awaitReadyOrFailure(daemonProc) {
+    const exitPromise = new Promise((resolve) => {
+      daemonProc.once("exit", (code, signal) => {
+        resolve({ kind: "exit", code, signal });
+      });
+      daemonProc.once("error", (err) => {
+        resolve({ kind: "spawn-error", err });
+      });
+    });
+    const readyPromise = this.waitForReady().then(() => ({ kind: "ready" }));
+    const result = await Promise.race([readyPromise, exitPromise]);
+    if (result.kind === "ready")
+      return;
+    if (result.kind === "spawn-error") {
+      throw new Error(`Daemon spawn failed: ${result.err.message}. ` + `Check that bun (${process.execPath}) is executable and that the ` + `daemon bundle exists at ${DAEMON_PATH}.`);
+    }
+    throw new Error(`Daemon exited before becoming ready ` + `(code=${result.code ?? "null"}, signal=${result.signal ?? "null"}). ` + `Check ${this.stateDir.logFile} for the daemon's last log lines. ` + `Common causes: control port ${this.controlPort} is already in use by another process, ` + `stale state in ${this.stateDir.dir}, ` + `or 'codex' CLI missing from PATH.`);
   }
   removeStalePidFile() {
     this.log("Removing stale pid file");

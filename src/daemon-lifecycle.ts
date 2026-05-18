@@ -1,4 +1,4 @@
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, unlinkSync, writeFileSync, openSync, closeSync, constants } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { StateDirResolver } from "./state-dir";
@@ -78,8 +78,8 @@ export class DaemonLifecycle {
     }
 
     try {
-      this.launch();
-      await this.waitForReady();
+      const daemonProc = this.launch();
+      await this.awaitReadyOrFailure(daemonProc);
     } finally {
       this.releaseLock();
     }
@@ -194,8 +194,21 @@ export class DaemonLifecycle {
     return existsSync(this.stateDir.killedFile);
   }
 
-  /** Launch daemon as detached background process. */
-  private launch(): void {
+  /**
+   * Launch daemon as detached background process. Returns the spawned
+   * process handle so the caller can race readiness polling against
+   * early-exit / spawn-error events.
+   *
+   * Bug fix (2026-05-18): previously this was `void` + `stdio: "ignore"`
+   * with no `error`/`exit` listeners, so any daemon crash (EADDRINUSE,
+   * state-dir EACCES, malformed config) silently disappeared into
+   * `waitForReady`'s 10s polling loop. User saw "Launching detached
+   * daemon..." then nothing — no diagnostic, no actionable error.
+   * Now `ensureRunning` races readiness against the process's `exit`
+   * + `error` events so failures surface in milliseconds with a hint
+   * pointing at the daemon log file.
+   */
+  private launch(): ChildProcess {
     this.stateDir.ensure();
     this.log(`Launching detached daemon on control port ${this.controlPort}`);
 
@@ -209,7 +222,61 @@ export class DaemonLifecycle {
       detached: true,
       stdio: "ignore",
     });
+
+    // Default no-op error listener — prevents an unhandled 'error' event
+    // (e.g. ENOENT on process.execPath) from crashing the CLI. Real
+    // error handling happens in `awaitReadyOrFailure` below.
+    daemonProc.on("error", () => { /* drained; handled in race */ });
+
     daemonProc.unref();
+    return daemonProc;
+  }
+
+  /**
+   * Race readiness polling against the daemon process exiting / erroring.
+   * If the daemon crashes before /readyz comes up, this rejects in
+   * milliseconds with a diagnostic pointing at the daemon log file
+   * instead of letting the user wait the full readiness timeout.
+   */
+  private async awaitReadyOrFailure(daemonProc: ChildProcess): Promise<void> {
+    type RaceResult =
+      | { kind: "ready" }
+      | { kind: "exit"; code: number | null; signal: NodeJS.Signals | null }
+      | { kind: "spawn-error"; err: Error };
+
+    const exitPromise = new Promise<RaceResult>((resolve) => {
+      daemonProc.once("exit", (code, signal) => {
+        resolve({ kind: "exit", code, signal });
+      });
+      daemonProc.once("error", (err) => {
+        resolve({ kind: "spawn-error", err });
+      });
+    });
+
+    const readyPromise = this.waitForReady().then(
+      (): RaceResult => ({ kind: "ready" }),
+    );
+
+    const result = await Promise.race([readyPromise, exitPromise]);
+    if (result.kind === "ready") return;
+
+    if (result.kind === "spawn-error") {
+      throw new Error(
+        `Daemon spawn failed: ${result.err.message}. ` +
+        `Check that bun (${process.execPath}) is executable and that the ` +
+        `daemon bundle exists at ${DAEMON_PATH}.`,
+      );
+    }
+
+    // result.kind === "exit"
+    throw new Error(
+      `Daemon exited before becoming ready ` +
+      `(code=${result.code ?? "null"}, signal=${result.signal ?? "null"}). ` +
+      `Check ${this.stateDir.logFile} for the daemon's last log lines. ` +
+      `Common causes: control port ${this.controlPort} is already in use by another process, ` +
+      `stale state in ${this.stateDir.dir}, ` +
+      `or 'codex' CLI missing from PATH.`,
+    );
   }
 
   private removeStalePidFile(): void {
