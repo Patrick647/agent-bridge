@@ -40,14 +40,17 @@ describe("task-journal: state machine + transitions", () => {
     rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  test("happy path: start → assign → submit → GO", () => {
+  test("happy path: start (with implementer) → submit → GO", () => {
+    // start with implementer auto-advances to implementing (Codex
+    // review msg ..._293 fix). Friendly hint "next: submit" now works.
     const j1 = startTask(projectRoot, "implement LRU cache", { implementer: "codex", reviewer: "claude" });
-    expect(j1.state).toBe("drafting");
+    expect(j1.state).toBe("implementing");
+    expect(j1.schemaVersion).toBe(1);
 
-    const j2 = assignImplementer(projectRoot, j1.taskId, "codex");
-    expect(j2.state).toBe("implementing");
-
-    const j3 = submitIteration(projectRoot, j1.taskId, "cache.ts + tests, 8/8 pass", { commitSha: "abc123" });
+    const j3 = submitIteration(projectRoot, j1.taskId, "cache.ts + tests, 8/8 pass", {
+      commitSha: "abc123",
+      implementer: "codex",  // --as required since implementer is set
+    });
     expect(j3.state).toBe("review_pending");
     expect(j3.iterations.length).toBe(1);
     expect(j3.iterations[0].iterationNumber).toBe(1);
@@ -63,10 +66,73 @@ describe("task-journal: state machine + transitions", () => {
     expect(isTerminal(j4.state)).toBe(true);
   });
 
+  test("start without implementer stays drafting; assign advances", () => {
+    const j1 = startTask(projectRoot, "deferred assignment");
+    expect(j1.state).toBe("drafting");
+    expect(j1.implementer).toBeUndefined();
+    const j2 = assignImplementer(projectRoot, j1.taskId, "codex");
+    expect(j2.state).toBe("implementing");
+    expect(j2.implementer).toBe("codex");
+  });
+
+  test("start rejects same role for implementer and reviewer", () => {
+    expect(() => startTask(projectRoot, "no self-review", {
+      implementer: "codex", reviewer: "codex",
+    })).toThrow(/must differ/);
+  });
+
+  // ── Codex review msg ..._296 contract regression tests ───────────────
+
+  test("submit requires --as when implementer is set", () => {
+    const j = startTask(projectRoot, "needs as", { implementer: "codex" });
+    expect(() => submitIteration(projectRoot, j.taskId, "out", { /* no implementer */ }))
+      .toThrow(/--as is required/);
+  });
+
+  test("submit rejects wrong --as when implementer is set", () => {
+    const j = startTask(projectRoot, "wrong as", { implementer: "codex" });
+    expect(() => submitIteration(projectRoot, j.taskId, "out", { implementer: "claude" }))
+      .toThrow(/Task implementer is "codex", but submission claimed "claude"/);
+  });
+
+  test("submit requires --as even when implementer not yet set", () => {
+    // No implementer at start; must be inferred from --as on submit.
+    const j = startTask(projectRoot, "no implementer at start");
+    assignImplementer(projectRoot, j.taskId, "codex");
+    // Now journal.implementer = codex. Without --as on submit, rejected.
+    expect(() => submitIteration(projectRoot, j.taskId, "out", {}))
+      .toThrow(/--as is required/);
+  });
+
+  test("verdict rejects wrong reviewer when reviewer is set", () => {
+    const j = startTask(projectRoot, "role mismatch", { implementer: "codex", reviewer: "claude" });
+    submitIteration(projectRoot, j.taskId, "out", { implementer: "codex" });
+    // Codex tries to review own work — wrong reviewer.
+    expect(() => recordVerdict(projectRoot, j.taskId, {
+      decision: "GO",
+      reviewer: "codex",
+      mustFix: [],
+      notes: "",
+    })).toThrow(/Task reviewer is "claude", but verdict claimed "codex"/);
+  });
+
+  test("verdict rejects self-review (reviewer same as implementer)", () => {
+    // Implementer set, reviewer not. Self-review would otherwise be
+    // allowed by the loose reviewer-not-set path.
+    const j = startTask(projectRoot, "self-review attempt", { implementer: "codex" });
+    submitIteration(projectRoot, j.taskId, "out", { implementer: "codex" });
+    expect(() => recordVerdict(projectRoot, j.taskId, {
+      decision: "GO",
+      reviewer: "codex",  // same as implementer!
+      mustFix: [],
+      notes: "",
+    })).toThrow(/cannot review their own implementation/);
+  });
+
   test("NEED_REVISION loop: must-fix required + iterates back to submit", () => {
     const j1 = startTask(projectRoot, "build thing");
     assignImplementer(projectRoot, j1.taskId, "codex");
-    submitIteration(projectRoot, j1.taskId, "first attempt");
+    submitIteration(projectRoot, j1.taskId, "first attempt", { implementer: "codex" });
 
     // NEED_REVISION without must-fix should error.
     expect(() => recordVerdict(projectRoot, j1.taskId, {
@@ -88,7 +154,7 @@ describe("task-journal: state machine + transitions", () => {
     expect(j2.iterations[0].reviewVerdict?.mustFix).toEqual(["fix X", "fix Y"]);
 
     // Submit iteration 2 → back to review_pending.
-    const j3 = submitIteration(projectRoot, j1.taskId, "fixed X and Y");
+    const j3 = submitIteration(projectRoot, j1.taskId, "fixed X and Y", { implementer: "codex" });
     expect(j3.state).toBe("review_pending");
     expect(j3.iterations.length).toBe(2);
 
@@ -106,7 +172,7 @@ describe("task-journal: state machine + transitions", () => {
   test("NO_GO: terminal rejection, no more iterations", () => {
     const j = startTask(projectRoot, "doomed task");
     assignImplementer(projectRoot, j.taskId, "codex");
-    submitIteration(projectRoot, j.taskId, "attempt");
+    submitIteration(projectRoot, j.taskId, "attempt", { implementer: "codex" });
     const final = recordVerdict(projectRoot, j.taskId, {
       decision: "NO_GO",
       reviewer: "claude",
@@ -117,7 +183,7 @@ describe("task-journal: state machine + transitions", () => {
     expect(isTerminal(final.state)).toBe(true);
 
     // Subsequent submit attempt should error.
-    expect(() => submitIteration(projectRoot, j.taskId, "try again")).toThrow(/Cannot submit/);
+    expect(() => submitIteration(projectRoot, j.taskId, "try again", { implementer: "codex" })).toThrow(/Cannot submit/);
   });
 
   test("invalid transitions: verdict requires review_pending state", () => {
@@ -155,8 +221,9 @@ describe("task-journal: state machine + transitions", () => {
 
   test("disk persistence: read back after write produces identical journal", () => {
     const j1 = startTask(projectRoot, "persist me", { implementer: "claude" });
-    assignImplementer(projectRoot, j1.taskId, "claude");
-    submitIteration(projectRoot, j1.taskId, "draft v1");
+    // start with implementer auto-advances to implementing (no assign needed)
+    expect(j1.state).toBe("implementing");
+    submitIteration(projectRoot, j1.taskId, "draft v1", { implementer: "claude" });
     const read = readJournal(projectRoot, j1.taskId);
     expect(read).not.toBeNull();
     expect(read!.taskId).toBe(j1.taskId);
@@ -208,7 +275,7 @@ describe("task-journal: state machine + transitions", () => {
     const j = startTask(projectRoot, "active test");
     expect(readActiveTaskId(projectRoot)).toBe(j.taskId);
     assignImplementer(projectRoot, j.taskId, "codex");
-    submitIteration(projectRoot, j.taskId, "out");
+    submitIteration(projectRoot, j.taskId, "out", { implementer: "codex" });
     recordVerdict(projectRoot, j.taskId, {
       decision: "NEED_REVISION",
       reviewer: "claude",

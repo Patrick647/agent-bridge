@@ -60,6 +60,10 @@ export interface Iteration {
 }
 
 export interface TaskJournal {
+  /** Schema version. Bumped on breaking field changes; older readers
+   * should refuse / migrate. (Codex review msg ..._296 suggestion —
+   * forward-compat for eventual bridge-protocol integration.) */
+  schemaVersion: 1;
   taskId: string;
   prompt: string;
   createdAt: number;
@@ -199,15 +203,26 @@ export function startTask(
   prompt: string,
   opts: { implementer?: AgentRole; reviewer?: AgentRole } = {},
 ): TaskJournal {
+  // Codex review msg ..._293: if implementer is provided at start time,
+  // auto-advance state to "implementing" so the next-step prompt
+  // ("run submit") doesn't crash with INVALID_STATE. Otherwise the
+  // start command's friendly hint contradicts the state machine.
+  if (opts.implementer && opts.reviewer && opts.implementer === opts.reviewer) {
+    throw new TaskJournalError(
+      "SAME_ROLE",
+      `implementer and reviewer must differ (both set to "${opts.implementer}"). The point of the protocol is two-agent mutual review.`,
+    );
+  }
   const taskId = generateTaskId(prompt);
   const journal: TaskJournal = {
+    schemaVersion: 1,
     taskId,
     prompt,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     implementer: opts.implementer,
     reviewer: opts.reviewer,
-    state: "drafting",
+    state: opts.implementer ? "implementing" : "drafting",
     iterations: [],
   };
   writeJournal(projectRoot, journal);
@@ -253,12 +268,34 @@ export function submitIteration(
       `Cannot submit iteration in state "${journal.state}". Run \`abg task assign --implementer CLAUDE|CODEX\` first if not yet implementing.`,
     );
   }
-  if (opts.implementer && journal.implementer !== opts.implementer) {
-    if (!journal.implementer) journal.implementer = opts.implementer;
-    else throw new TaskJournalError(
-      "WRONG_IMPLEMENTER",
-      `Task implementer is ${journal.implementer}, but submission claimed ${opts.implementer}.`,
-    );
+  // Codex review msg ..._296: enforce implementer identity. Two cases:
+  //   (a) journal.implementer already set: require --as to match.
+  //       Without explicit --as we can't tell who's submitting, so the
+  //       contract bypass would let either agent claim either side's
+  //       work. Hard reject.
+  //   (b) journal.implementer not yet set: --as must be provided to
+  //       inform who's implementing. If both missing, ambiguous.
+  if (journal.implementer) {
+    if (!opts.implementer) {
+      throw new TaskJournalError(
+        "MISSING_AS",
+        `Task implementer is "${journal.implementer}"; --as is required to claim that role explicitly.`,
+      );
+    }
+    if (opts.implementer !== journal.implementer) {
+      throw new TaskJournalError(
+        "WRONG_IMPLEMENTER",
+        `Task implementer is "${journal.implementer}", but submission claimed "${opts.implementer}".`,
+      );
+    }
+  } else {
+    if (!opts.implementer) {
+      throw new TaskJournalError(
+        "MISSING_AS",
+        `Task has no assigned implementer; --as is required on submit to set it.`,
+      );
+    }
+    journal.implementer = opts.implementer;
   }
   const iteration: Iteration = {
     iterationNumber: journal.iterations.length + 1,
@@ -292,6 +329,23 @@ export function recordVerdict(
   const latestIteration = journal.iterations[journal.iterations.length - 1];
   if (!latestIteration) {
     throw new TaskJournalError("NO_ITERATION", "Task has no iterations to review");
+  }
+  // Codex review msg ..._296: enforce reviewer identity + prohibit self-
+  // review. Without these, Codex can self-approve a Codex implementation
+  // (reviewer=claude in task journal but verdict claims reviewer=codex →
+  // silently accepted pre-fix), which destroys the "mutual review"
+  // contract that's the whole point of this state machine.
+  if (journal.reviewer && journal.reviewer !== verdict.reviewer) {
+    throw new TaskJournalError(
+      "WRONG_REVIEWER",
+      `Task reviewer is "${journal.reviewer}", but verdict claimed "${verdict.reviewer}".`,
+    );
+  }
+  if (journal.implementer && journal.implementer === verdict.reviewer) {
+    throw new TaskJournalError(
+      "SELF_REVIEW",
+      `Reviewer "${verdict.reviewer}" cannot review their own implementation (implementer="${journal.implementer}"). Mutual review is the whole point.`,
+    );
   }
   const fullVerdict: Verdict = { ...verdict, reviewedAt: Date.now() };
   latestIteration.reviewVerdict = fullVerdict;
