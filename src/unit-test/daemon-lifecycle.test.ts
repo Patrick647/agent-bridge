@@ -128,3 +128,129 @@ describe("DaemonLifecycle", () => {
     expect(result).toBe(false);
   });
 });
+
+// ── Bug fix (2026-05-18): awaitReadyOrFailure surfaces daemon crash ──
+//
+// Before fix: `launch()` returned void with `stdio: "ignore"` and no
+// `error`/`exit` listeners. Daemon crash (EADDRINUSE, malformed config,
+// missing codex CLI) silently disappeared and the CLI polled `/readyz`
+// for the full 10s timeout with no diagnostic. User saw "Launching
+// detached daemon..." then perceived stuck process.
+//
+// After fix: `ensureRunning` races readiness polling against the
+// process's `exit` + `error` events, so a crash surfaces in
+// milliseconds with a hint pointing at the daemon log file.
+
+import { EventEmitter } from "node:events";
+
+describe("DaemonLifecycle.awaitReadyOrFailure (Bug 2026-05-18 fix)", () => {
+  let tempDir: string;
+  let stateDir: StateDirResolver;
+  let logs: string[];
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "agentbridge-lifecycle-race-test-"));
+    stateDir = new StateDirResolver(tempDir);
+    stateDir.ensure();
+    logs = [];
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function createLifecycle(port = 19998) {
+    return new DaemonLifecycle({
+      stateDir,
+      controlPort: port,
+      log: (msg) => logs.push(msg),
+    });
+  }
+
+  function fakeChildProcess(): EventEmitter {
+    return new EventEmitter();
+  }
+
+  test("rejects with exit diagnostic when daemon dies before becoming ready", async () => {
+    const lc = createLifecycle();
+    const fakeProc = fakeChildProcess();
+
+    // Fire `exit` shortly after the race starts. Real-world scenario:
+    // daemon throws on EADDRINUSE within ~50ms of spawn.
+    setTimeout(() => fakeProc.emit("exit", 1, null), 50);
+
+    let caught: Error | null = null;
+    try {
+      await (lc as any).awaitReadyOrFailure(fakeProc);
+    } catch (err) {
+      caught = err as Error;
+    }
+
+    expect(caught).toBeDefined();
+    expect(caught!.message).toMatch(/Daemon exited before becoming ready/);
+    expect(caught!.message).toMatch(/code=1/);
+    // Pointer to log file for actionable diagnosis.
+    expect(caught!.message).toContain(stateDir.logFile);
+    // Mentions the common causes so user has somewhere to look.
+    expect(caught!.message).toMatch(/already in use|stale state|codex.*PATH/);
+  });
+
+  test("rejects with spawn-error diagnostic when child emits 'error'", async () => {
+    const lc = createLifecycle();
+    const fakeProc = fakeChildProcess();
+
+    // Simulate ENOENT on process.execPath — child_process 'error' event.
+    setTimeout(() => {
+      const err = new Error("spawn /nonexistent ENOENT");
+      (err as any).code = "ENOENT";
+      fakeProc.emit("error", err);
+    }, 50);
+
+    let caught: Error | null = null;
+    try {
+      await (lc as any).awaitReadyOrFailure(fakeProc);
+    } catch (err) {
+      caught = err as Error;
+    }
+
+    expect(caught).toBeDefined();
+    expect(caught!.message).toMatch(/Daemon spawn failed/);
+    expect(caught!.message).toContain("ENOENT");
+    // Pointer to fix path: the bun exec path + bundle path.
+    expect(caught!.message).toContain(process.execPath);
+  });
+
+  test("resolves cleanly when daemon becomes ready before exit/error fires", async () => {
+    const lc = createLifecycle();
+    const fakeProc = fakeChildProcess();
+
+    // Stub waitForReady to resolve immediately (simulate /readyz coming up
+    // before any failure event fires).
+    (lc as any).waitForReady = async () => { /* ready */ };
+
+    // No exit/error emitted — happy path.
+    await (lc as any).awaitReadyOrFailure(fakeProc);
+    // Should not throw, and we should reach this line. No assertion on
+    // resolved value needed (return type is void).
+  });
+
+  test("regression: stale exit listener after ready does NOT crash with unhandled rejection", async () => {
+    // After awaitReadyOrFailure resolves on ready, the daemon may
+    // legitimately exit later (e.g. SIGTERM during graceful shutdown).
+    // The leftover exit listener from the race must not produce
+    // unhandled rejections or stray errors.
+    const lc = createLifecycle();
+    const fakeProc = fakeChildProcess();
+
+    (lc as any).waitForReady = async () => { /* ready */ };
+    await (lc as any).awaitReadyOrFailure(fakeProc);
+
+    // Emit a late exit. With Promise.race, the loser's resolution is
+    // discarded — no unhandled rejection. Verify by emitting and
+    // observing no thrown error.
+    let lateExitObserved = false;
+    fakeProc.on("exit", () => { lateExitObserved = true; });
+    fakeProc.emit("exit", 0, "SIGTERM");
+    expect(lateExitObserved).toBe(true);
+  });
+});
