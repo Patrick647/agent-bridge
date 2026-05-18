@@ -52,6 +52,11 @@ async function main() {
       const { runStatus } = await import("./cli/status");
       await runStatus(restArgs);
       break;
+    case "task":
+      // 2026-05-18: minimal review state machine. See `src/task-journal.ts`.
+      const { runTask } = await import("./cli/task");
+      await runTask(restArgs);
+      break;
     case "--help":
     case "-h":
     case undefined:
@@ -84,8 +89,10 @@ Commands:
   codex [args...]   Start Codex TUI connected to AgentBridge daemon
                     Use --pair NAME to target a specific pair (STM v2.3)
   pairs <subcmd>    Manage shared-thread pairs (STM v2.3)
-                    Subcommands: ls / rm NAME [--forget] [--force]
+                    Subcommands: ls / rm NAME [--forget] [--force] / claim CHAT_ID
   status [--json]   Human-readable daemon health + per-pair snapshot
+  task <subcmd>     Review state machine: start / assign / submit / verdict /
+                    abandon / status / journal / list
   kill              Force kill all AgentBridge processes
 
 Options:
