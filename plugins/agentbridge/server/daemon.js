@@ -3326,6 +3326,16 @@ function handleClaimPairForChat(ws, message) {
     });
     return;
   }
+  if (state.thread.isTurnInProgress && !force) {
+    sendProtocolMessage(ws, {
+      type: "pair_claim_failed",
+      requestId,
+      chatId,
+      code: "CHAT_NOT_READY",
+      message: `Chat "${chatId}" has an active isolated turn in progress. Wait for it to complete, or pass --force to claim anyway (the running turn will be terminated).`
+    });
+    return;
+  }
   let targetPair;
   if (pairId) {
     const candidate = pairs.get(pairId);
@@ -3555,12 +3565,20 @@ async function attachClaude(ws, requestedChatId, requestedPairId, requestId) {
   });
   try {
     const threadId = await state.thread.bootstrap();
+    if (chats.get(chatId) !== state || state.paired) {
+      log(`ClaudeThread bootstrap completed for chatId=${chatId} but state was re-homed/paired \u2014 dropping late ready emission`);
+      return;
+    }
     state.ready = true;
     log(`ClaudeThread ready: chatId=${chatId} threadId=${threadId}`);
     emitToChat(state, systemMessage("system_thread_ready", `\u2705 Your Codex thread is ready (threadId=${threadId}). You can now send messages via the reply tool.`));
     broadcastStatus();
   } catch (err) {
     log(`ClaudeThread bootstrap failed for chatId=${chatId}: ${err?.message ?? err}`);
+    if (chats.get(chatId) !== state || state.paired) {
+      log(`ClaudeThread bootstrap failed for chatId=${chatId} but state was re-homed/paired \u2014 dropping late failure handling`);
+      return;
+    }
     emitToChat(state, systemMessage("system_thread_failed", `\u274C Failed to provision Codex thread: ${err?.message ?? err}. Reconnect to retry.`));
     reapChatState(state, `bootstrap failed: ${err?.message ?? err}`);
   }

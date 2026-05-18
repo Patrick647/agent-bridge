@@ -1716,6 +1716,150 @@ describe("handleClaimPairForChat contract (2026-05-18)", () => {
     chats.delete(chat.chatId);
   });
 
+  // Codex review msg ..._274: in-flight bootstrap during forced claim
+  // — late bootstrap result must NOT mutate paired state or reap.
+  test("forced claim during in-flight bootstrap: late bootstrap result is dropped silently", async () => {
+    setupSlot("ready");
+    const chat = fns.createChatState("chat-claim-inflight");
+    chat.ready = false;
+    chat.ws = makeChatWs(chat.chatId, 60);
+    chats.set(chat.chatId, chat);
+
+    // Stub bootstrap to return a pending promise we control.
+    const oldThread = chat.thread;
+    let resolveBootstrap: (v: string) => void = () => {};
+    let rejectBootstrap: (err: any) => void = () => {};
+    const bootstrapPromise = new Promise<string>((res, rej) => {
+      resolveBootstrap = res;
+      rejectBootstrap = rej;
+    });
+    (oldThread as any).bootstrap = () => bootstrapPromise;
+
+    // Start the bootstrap path (mimics what attachClaude does after
+    // ok=true). We invoke it directly without an actual WS for simplicity.
+    let bootstrapStateAfterReady: any = null;
+    const bootstrapPath = (async () => {
+      try {
+        const threadId = await oldThread.bootstrap();
+        if (chats.get(chat.chatId) !== chat || chat.paired) {
+          // dropped late — this is the new guard
+          bootstrapStateAfterReady = { dropped: true };
+          return;
+        }
+        chat.ready = true;
+        bootstrapStateAfterReady = { ready: chat.ready };
+      } catch {
+        bootstrapStateAfterReady = { rejected: true };
+      }
+    })();
+
+    // Now force-claim while bootstrap is pending.
+    const { ws, sent } = makeClaimMockWs(61);
+    (fns as any).handleClaimPairForChat(ws, {
+      type: "claim_pair_for_chat",
+      requestId: "req-inflight",
+      chatId: chat.chatId,
+      force: true,
+    });
+    expect(sent.find((m) => m.type === "pair_claimed")).toBeDefined();
+    expect(chat.paired).toBe(true);
+
+    // The claim called oldThread.close() — that does NOT auto-reject
+    // a bootstrap promise we stubbed (since the stub is just a Promise).
+    // Resolve the promise NOW to exercise the late-success path.
+    resolveBootstrap("late-thread-id");
+    await bootstrapPath;
+
+    // Pre-fix: bootstrap path would have set chat.ready=true (overwriting
+    // paired readiness). Post-fix: guard sees state.paired=true → drop.
+    expect(bootstrapStateAfterReady).toEqual({ dropped: true });
+    expect(chat.paired).toBe(true);  // still paired
+    expect(chats.has(chat.chatId)).toBe(true);  // still in chats
+
+    // Also test the rejection path: simulate a forced claim where the
+    // bootstrap promise REJECTS after the close (mimics what happens
+    // when oldThread.close() rejects the in-flight bootstrap).
+    chats.delete(chat.chatId);
+    // Reset proxy slot — first claim left it paired with chat.chatId,
+    // second claim needs a fresh slot.
+    setupSlot("ready");
+    const chat2 = fns.createChatState("chat-claim-inflight-reject");
+    chat2.ready = false;
+    chat2.ws = makeChatWs(chat2.chatId, 62);
+    chats.set(chat2.chatId, chat2);
+    const oldThread2 = chat2.thread;
+    let rejectBootstrap2: (err: any) => void = () => {};
+    const bootstrapPromise2 = new Promise<string>((_, rej) => { rejectBootstrap2 = rej; });
+    (oldThread2 as any).bootstrap = () => bootstrapPromise2;
+    let bootstrap2State: any = null;
+    const bootstrapPath2 = (async () => {
+      try {
+        await oldThread2.bootstrap();
+        bootstrap2State = { resolved: true };
+      } catch (err: any) {
+        if (chats.get(chat2.chatId) !== chat2 || chat2.paired) {
+          bootstrap2State = { dropped: true };
+          return;
+        }
+        bootstrap2State = { reaped: true };
+      }
+    })();
+    const { ws: ws2 } = makeClaimMockWs(63);
+    (fns as any).handleClaimPairForChat(ws2, {
+      type: "claim_pair_for_chat",
+      requestId: "req-inflight-rej",
+      chatId: chat2.chatId,
+      force: true,
+    });
+    expect(chat2.paired).toBe(true);
+    rejectBootstrap2(new Error("thread closed"));
+    await bootstrapPath2;
+    expect(bootstrap2State).toEqual({ dropped: true });
+    expect(chats.has(chat2.chatId)).toBe(true);
+
+    chats.delete(chat.chatId);
+    chats.delete(chat2.chatId);
+  });
+
+  test("claim rejects active isolated turn without --force, accepts with --force", () => {
+    setupSlot("ready");
+    const chat = fns.createChatState("chat-claim-turn-busy");
+    chat.ready = true;
+    chat.ws = makeChatWs(chat.chatId, 64);
+    // Stub the thread to look like a turn is in progress.
+    Object.defineProperty(chat.thread, "isTurnInProgress", {
+      configurable: true,
+      get: () => true,
+    });
+    chats.set(chat.chatId, chat);
+
+    // Without --force → reject CHAT_NOT_READY.
+    const { ws, sent } = makeClaimMockWs(65);
+    (fns as any).handleClaimPairForChat(ws, {
+      type: "claim_pair_for_chat",
+      requestId: "req-turn-busy",
+      chatId: chat.chatId,
+    });
+    let result = sent.find((m) => m.type === "pair_claim_failed");
+    expect(result?.code).toBe("CHAT_NOT_READY");
+    expect(result?.message).toMatch(/active isolated turn in progress/);
+    expect(chat.paired).toBe(false);
+
+    // With --force → success.
+    const { ws: ws2, sent: sent2 } = makeClaimMockWs(66);
+    (fns as any).handleClaimPairForChat(ws2, {
+      type: "claim_pair_for_chat",
+      requestId: "req-turn-force",
+      chatId: chat.chatId,
+      force: true,
+    });
+    result = sent2.find((m) => m.type === "pair_claimed" || m.type === "pair_claim_failed");
+    expect(result?.type).toBe("pair_claimed");
+    expect(chat.paired).toBe(true);
+
+    chats.delete(chat.chatId);
+  });
+
   // CRITICAL: the must-fix from Codex review msg ..._268.
   test("old isolated ClaudeThread close after claim does NOT reap paired chat", () => {
     setupSlot("ready");

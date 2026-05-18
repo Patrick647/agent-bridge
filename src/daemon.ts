@@ -1086,6 +1086,9 @@ function handleClaimPairForChat(
   // The race: bootstrap promise resolves AFTER claim → sets
   // state.ready=true + emits system_isolated_ready, contradicting
   // paired semantics. (Codex review msg ..._268.)
+  // Mitigated additionally by the paired-state guard in attachClaude's
+  // bootstrap then/catch (msg ..._274) — the forced path is now safe
+  // even mid-bootstrap, but we still recommend waiting.
   if (!state.ready && !force) {
     sendProtocolMessage(ws, {
       type: "pair_claim_failed",
@@ -1093,6 +1096,19 @@ function handleClaimPairForChat(
       chatId,
       code: "CHAT_NOT_READY",
       message: `Chat "${chatId}" isolated thread is not yet ready (bootstrap in flight). Retry shortly, or pass --force to claim anyway (paired readiness will derive from the proxy slot, racing isolated-bootstrap emissions are ignored).`,
+    });
+    return;
+  }
+  // Reject claim during an active isolated turn unless --force. Closing
+  // a running turn would terminate it silently from the user's POV.
+  // (Codex review msg ..._274.)
+  if (state.thread.isTurnInProgress && !force) {
+    sendProtocolMessage(ws, {
+      type: "pair_claim_failed",
+      requestId,
+      chatId,
+      code: "CHAT_NOT_READY",
+      message: `Chat "${chatId}" has an active isolated turn in progress. Wait for it to complete, or pass --force to claim anyway (the running turn will be terminated).`,
     });
     return;
   }
@@ -1400,6 +1416,16 @@ async function attachClaude(
 
   try {
     const threadId = await state.thread.bootstrap();
+    // Codex review msg ..._274: if the chat was claimed (state.paired
+    // flipped) OR replaced (new ChatState for same chatId) during
+    // bootstrap, the bootstrap result is now stale — paired chats
+    // derive readiness from the proxy slot, not isolated-thread state.
+    // Drop the late mutations silently instead of overwriting paired
+    // state or emitting an obsolete system_thread_ready.
+    if (chats.get(chatId) !== state || state.paired) {
+      log(`ClaudeThread bootstrap completed for chatId=${chatId} but state was re-homed/paired — dropping late ready emission`);
+      return;
+    }
     state.ready = true;
     log(`ClaudeThread ready: chatId=${chatId} threadId=${threadId}`);
     emitToChat(state, systemMessage("system_thread_ready",
@@ -1407,6 +1433,16 @@ async function attachClaude(
     broadcastStatus();
   } catch (err: any) {
     log(`ClaudeThread bootstrap failed for chatId=${chatId}: ${err?.message ?? err}`);
+    // Codex review msg ..._274: same guard — if the chat was claimed
+    // or replaced during bootstrap, the failure is irrelevant to the
+    // now-paired chat (its transport is the proxy slot, not this
+    // closed thread). Reaping it here would delete a live paired
+    // chat. The forced-claim path explicitly closed the old thread,
+    // which is what triggered this catch.
+    if (chats.get(chatId) !== state || state.paired) {
+      log(`ClaudeThread bootstrap failed for chatId=${chatId} but state was re-homed/paired — dropping late failure handling`);
+      return;
+    }
     emitToChat(state, systemMessage("system_thread_failed",
       `❌ Failed to provision Codex thread: ${err?.message ?? err}. Reconnect to retry.`));
     // Bug fix (2026-05-17): reap the half-initialized chat so the
