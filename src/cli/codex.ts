@@ -289,9 +289,15 @@ export async function runCodex(rawArgs: string[]) {
   // of silently dropping the flag.
   if (sandbox) {
     if (daemonAlreadyUp) {
+      const currentSandbox = healthzData?.codexSandbox ?? null;
       console.warn(`[agentbridge] Warning: --sandbox=${sandbox} ignored — daemon is already running.`);
+      console.warn(`[agentbridge]   Current daemon sandbox: ${currentSandbox === null ? "<default (read-only)>" : currentSandbox}`);
       console.warn(`[agentbridge]   The codex app-server sandbox was fixed at daemon spawn time.`);
       console.warn(`[agentbridge]   To switch sandboxes: \`abg kill && abg codex --sandbox=${sandbox}\``);
+      const attachedClaudeCount = healthzData?.attachedClaudeCount ?? 0;
+      if (attachedClaudeCount > 0) {
+        console.warn(`[agentbridge]   Note: \`abg kill\` will disable ${attachedClaudeCount} attached Claude bridge(s).`);
+      }
     } else {
       process.env.AGENTBRIDGE_CODEX_SANDBOX = sandbox;
     }
@@ -332,6 +338,10 @@ export async function runCodex(rawArgs: string[]) {
       console.warn(`[agentbridge]   your cwd:     ${userCwd}`);
       console.warn(`[agentbridge]   If you want Codex to run in your current cwd:`);
       console.warn(`[agentbridge]     abg kill && cd ${JSON.stringify(userCwd)} && abg codex${mode === "proxy" ? " --via-proxy" : ""}${pairId !== "default" ? ` --pair ${pairId}` : ""}`);
+      const attachedClaudeCount = healthzData?.attachedClaudeCount ?? 0;
+      if (attachedClaudeCount > 0) {
+        console.warn(`[agentbridge]   Caveat: \`abg kill\` will disable ${attachedClaudeCount} other attached Claude bridge(s).`);
+      }
       console.warn(``);
     }
   }

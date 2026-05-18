@@ -10,6 +10,7 @@ import {
   getWorkflowSections,
   isValidWorkflowPreset,
   VALID_WORKFLOW_PRESETS,
+  WORKFLOW_DESCRIPTIONS,
   type WorkflowPreset,
 } from "../collaboration-content";
 
@@ -50,12 +51,6 @@ function parseInitFlags(args: string[]): { workflow: WorkflowPreset } {
   }
   return { workflow };
 }
-
-/** Short user-visible description per workflow preset. Keep these 1-line. */
-const WORKFLOW_DESCRIPTIONS: Record<WorkflowPreset, string> = {
-  "default": "generic 'propose split per task' content; no fixed role assignment",
-  "codex-implements": "fixed roles: Codex implements + verifies; Claude designs + reviews + handles git",
-};
 
 function printWorkflowList(): void {
   console.log(`Available workflow presets for \`abg init --workflow NAME\`:\n`);

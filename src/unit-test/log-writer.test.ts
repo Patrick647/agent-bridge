@@ -6,15 +6,16 @@
  * env. We set tiny thresholds so a few write() calls trigger
  * rotation; in production the defaults are 50 MB and 5 backups.
  */
-process.env.AGENTBRIDGE_LOG_MAX_SIZE_BYTES = "200";  // 200 bytes — small enough to trigger fast
-process.env.AGENTBRIDGE_LOG_BACKUPS = "3";
-
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const { getAsyncFileLogger, closeAllAsyncFileLoggers, _testingState } = await import("../log-writer");
+const { getAsyncFileLogger, closeAllAsyncFileLoggers, _testingState, _testingSetConstants } = await import("../log-writer");
+// Force tiny thresholds for tests. Done via setter (not env) because
+// Bun shares module cache across test files; another test importing
+// log-writer first would lock the constants to defaults.
+_testingSetConstants({ maxSize: 200, backups: 3 });
 
 describe("log-writer rotation", () => {
   let tempDir: string;

@@ -87,5 +87,23 @@ export async function runStatus(rawArgs: string[]): Promise<void> {
     }
   }
   console.log(``);
+
+  // Codex review msg ..._268: surface actionable hint when we see
+  // unpaired pair slots AND isolated chats — exactly the scenario
+  // where `abg pairs claim` solves a real friction point.
+  const unpairedSlots = pairs.filter((p: any) => p.isLive && p.proxyTuiConnected && !p.pairedChatId);
+  const isolatedChats: Array<{ chatId: string; pairId: string }> = [];
+  for (const p of pairs) {
+    for (const c of (p.attachedClaudes ?? []) as Array<{ chatId: string; paired: boolean }>) {
+      if (!c.paired) isolatedChats.push({ chatId: c.chatId, pairId: p.pairId });
+    }
+  }
+  if (unpairedSlots.length > 0 && isolatedChats.length > 0) {
+    console.log(`💡 Hint: ${isolatedChats.length} isolated chat(s) + ${unpairedSlots.length} unpaired proxy TUI slot(s).`);
+    console.log(`   You can retroactively pair one with:`);
+    console.log(`     abg pairs claim ${isolatedChats[0].chatId}${unpairedSlots.length > 1 ? ` --pair ${unpairedSlots[0].pairId}` : ""}`);
+    console.log(``);
+  }
+
   console.log(`(Pass --json for machine-readable output.)`);
 }

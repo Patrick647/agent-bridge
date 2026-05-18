@@ -14,6 +14,7 @@ import { dirname } from "path";
 var LOG_MAX_SIZE_BYTES = parseInt(process.env.AGENTBRIDGE_LOG_MAX_SIZE_BYTES ?? String(50 * 1024 * 1024), 10);
 var LOG_BACKUPS = parseInt(process.env.AGENTBRIDGE_LOG_BACKUPS ?? "5", 10);
 var writers = new Map;
+var closingStreams = new Set;
 var bytesWritten = new Map;
 var rotating = new Set;
 function ensureBytesCounterBootstrapped(filePath) {
@@ -50,9 +51,12 @@ function rotateFile(filePath) {
   try {
     const current = writers.get(filePath);
     if (current && !current.destroyed) {
+      closingStreams.add(current);
       try {
-        current.end();
-      } catch {}
+        current.end(() => closingStreams.delete(current));
+      } catch {
+        closingStreams.delete(current);
+      }
     }
     writers.delete(filePath);
     const oldest = `${filePath}.${LOG_BACKUPS}`;
@@ -122,15 +126,27 @@ function getAsyncFileLogger(filePath) {
 }
 async function closeAllAsyncFileLoggers() {
   const all = [...writers.entries()];
+  const closing = [...closingStreams];
   writers.clear();
+  closingStreams.clear();
   bytesWritten.clear();
-  await Promise.all(all.map(([_path, stream]) => new Promise((resolve) => {
+  const pendingActive = all.map(([_path, stream]) => new Promise((resolve) => {
     if (stream.destroyed) {
       resolve();
       return;
     }
     stream.end(() => resolve());
-  })));
+  }));
+  const pendingClosing = closing.map((stream) => new Promise((resolve) => {
+    if (stream.destroyed) {
+      resolve();
+      return;
+    }
+    const done = () => resolve();
+    stream.once("finish", done);
+    stream.once("close", done);
+  }));
+  await Promise.all([...pendingActive, ...pendingClosing]);
 }
 
 // src/codex-adapter.ts
@@ -3268,7 +3284,7 @@ function handleListPairs(ws, message) {
   });
 }
 function handleClaimPairForChat(ws, message) {
-  const { chatId, pairId, requestId } = message;
+  const { chatId, pairId, requestId, force } = message;
   const state = chats.get(chatId);
   if (!state) {
     sendProtocolMessage(ws, {
@@ -3287,6 +3303,26 @@ function handleClaimPairForChat(ws, message) {
       chatId,
       code: "CHAT_ALREADY_PAIRED",
       message: `Chat "${chatId}" is already paired (homePairId=${state.homePairId}).`
+    });
+    return;
+  }
+  if (state.ws === null) {
+    sendProtocolMessage(ws, {
+      type: "pair_claim_failed",
+      requestId,
+      chatId,
+      code: "CHAT_DISCONNECTED",
+      message: `Chat "${chatId}" has no live bridge connection (in reap grace window). Reconnect Claude first, then retry claim.`
+    });
+    return;
+  }
+  if (!state.ready && !force) {
+    sendProtocolMessage(ws, {
+      type: "pair_claim_failed",
+      requestId,
+      chatId,
+      code: "CHAT_NOT_READY",
+      message: `Chat "${chatId}" isolated thread is not yet ready (bootstrap in flight). Retry shortly, or pass --force to claim anyway (paired readiness will derive from the proxy slot, racing isolated-bootstrap emissions are ignored).`
     });
     return;
   }
@@ -3355,6 +3391,16 @@ function handleClaimPairForChat(ws, message) {
       });
       return;
     }
+  }
+  try {
+    state.thread.removeAllListeners();
+  } catch (err) {
+    log(`[${chatId}] claim_pair_for_chat: removeAllListeners threw: ${err?.message ?? err}`);
+  }
+  try {
+    state.thread.close();
+  } catch (err) {
+    log(`[${chatId}] claim_pair_for_chat: old thread.close() threw: ${err?.message ?? err}`);
   }
   state.homePairId = targetPair.pairId;
   targetPair.proxyTuiSlot.pairedChatId = chatId;
@@ -4242,6 +4288,7 @@ var __testing = {
     handleEnsurePair,
     handleDestroyPair,
     handleListPairs,
+    handleClaimPairForChat,
     attachClaude,
     log,
     wireClaudeThreadEvents,

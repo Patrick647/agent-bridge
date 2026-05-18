@@ -1549,3 +1549,209 @@ describe("M01 regression — paired-inject routes to homePair's CodexAdapter (20
     }
   });
 });
+
+// ── `pairs claim` regression (Codex review msg ..._268 must-fixes) ────
+
+describe("handleClaimPairForChat contract (2026-05-18)", () => {
+  function makeClaimMockWs(clientId = 50) {
+    const sent: any[] = [];
+    const ws: any = {
+      send: (payload: string) => { sent.push(JSON.parse(payload)); return 1; },
+      data: { clientId, attached: true, chatId: null },
+      readyState: 1,
+      close: () => {},
+    };
+    return { sent, ws };
+  }
+
+  function makeChatWs(chatId: string, clientId: number) {
+    return {
+      data: { clientId, attached: true, chatId },
+      readyState: 1,
+      send: () => 1,
+      close: () => {},
+    } as any;
+  }
+
+  function setupSlot(readiness: "ready" | "not-ready" = "ready") {
+    const pair = __testing.pairs.get("default")!;
+    pair.isLive = true;
+    __testing.setProxyTuiSlot({
+      token: "claim-test-token",
+      pairedChatId: null,
+      readiness,
+      attachedAt: Date.now(),
+      pairReapTimer: null,
+    });
+    return pair;
+  }
+
+  test("happy path: claims a ready isolated chat with live ws", () => {
+    setupSlot("ready");
+    const chat = fns.createChatState("chat-claim-happy");
+    chat.ready = true;
+    chat.ws = makeChatWs(chat.chatId, 51);
+    chats.set(chat.chatId, chat);
+
+    const { ws, sent } = makeClaimMockWs();
+    (fns as any).handleClaimPairForChat(ws, {
+      type: "claim_pair_for_chat",
+      requestId: "req-happy",
+      chatId: chat.chatId,
+    });
+    const result = sent.find((m) => m.type === "pair_claimed" || m.type === "pair_claim_failed");
+    expect(result?.type).toBe("pair_claimed");
+    expect(result?.pairId).toBe("default");
+    expect(chat.paired).toBe(true);
+    expect(chat.homePairId).toBe("default");
+    expect(chat.ready).toBe(true);
+    expect(__testing.pairs.get("default")!.proxyTuiSlot?.pairedChatId).toBe(chat.chatId);
+
+    chats.delete(chat.chatId);
+  });
+
+  test("rejects CHAT_NOT_FOUND for unknown chatId", () => {
+    setupSlot("ready");
+    const { ws, sent } = makeClaimMockWs();
+    (fns as any).handleClaimPairForChat(ws, {
+      type: "claim_pair_for_chat",
+      requestId: "req-404",
+      chatId: "does-not-exist",
+    });
+    const result = sent.find((m) => m.type === "pair_claim_failed");
+    expect(result?.code).toBe("CHAT_NOT_FOUND");
+  });
+
+  test("rejects CHAT_ALREADY_PAIRED", () => {
+    const pair = setupSlot("ready");
+    const chat = fns.createChatState("chat-claim-already");
+    chat.paired = true;  // pretend already paired
+    chat.homePairId = "default";
+    chats.set(chat.chatId, chat);
+
+    const { ws, sent } = makeClaimMockWs();
+    (fns as any).handleClaimPairForChat(ws, {
+      type: "claim_pair_for_chat",
+      requestId: "req-paired",
+      chatId: chat.chatId,
+    });
+    const result = sent.find((m) => m.type === "pair_claim_failed");
+    expect(result?.code).toBe("CHAT_ALREADY_PAIRED");
+
+    chats.delete(chat.chatId);
+  });
+
+  test("rejects CHAT_DISCONNECTED when state.ws is null", () => {
+    setupSlot("ready");
+    const chat = fns.createChatState("chat-claim-disconn");
+    chat.ready = true;
+    chat.ws = null;  // detached bridge — within reap grace
+    chats.set(chat.chatId, chat);
+
+    const { ws, sent } = makeClaimMockWs();
+    (fns as any).handleClaimPairForChat(ws, {
+      type: "claim_pair_for_chat",
+      requestId: "req-disconn",
+      chatId: chat.chatId,
+    });
+    const result = sent.find((m) => m.type === "pair_claim_failed");
+    expect(result?.code).toBe("CHAT_DISCONNECTED");
+    expect(result?.message).toMatch(/Reconnect Claude first/);
+    expect(chat.paired).toBe(false);
+
+    chats.delete(chat.chatId);
+  });
+
+  test("rejects CHAT_NOT_READY when isolated bootstrap in flight; --force overrides", () => {
+    setupSlot("ready");
+    const chat = fns.createChatState("chat-claim-notready");
+    chat.ready = false;  // bootstrap in flight
+    chat.ws = makeChatWs(chat.chatId, 53);
+    chats.set(chat.chatId, chat);
+
+    // Without --force → reject.
+    const { ws, sent } = makeClaimMockWs();
+    (fns as any).handleClaimPairForChat(ws, {
+      type: "claim_pair_for_chat",
+      requestId: "req-notready",
+      chatId: chat.chatId,
+    });
+    let result = sent.find((m) => m.type === "pair_claim_failed");
+    expect(result?.code).toBe("CHAT_NOT_READY");
+    expect(chat.paired).toBe(false);
+
+    // With --force → succeeds.
+    const { ws: ws2, sent: sent2 } = makeClaimMockWs(54);
+    (fns as any).handleClaimPairForChat(ws2, {
+      type: "claim_pair_for_chat",
+      requestId: "req-force",
+      chatId: chat.chatId,
+      force: true,
+    });
+    result = sent2.find((m) => m.type === "pair_claimed" || m.type === "pair_claim_failed");
+    expect(result?.type).toBe("pair_claimed");
+    expect(chat.paired).toBe(true);
+
+    chats.delete(chat.chatId);
+  });
+
+  test("rejects NO_FREE_PAIR when no live pair has unpaired proxy slot", () => {
+    __testing.pairs.get("default")!.isLive = true;
+    __testing.setProxyTuiSlot(null);  // no slot
+    const chat = fns.createChatState("chat-claim-nofree");
+    chat.ready = true;
+    chat.ws = makeChatWs(chat.chatId, 55);
+    chats.set(chat.chatId, chat);
+
+    const { ws, sent } = makeClaimMockWs();
+    (fns as any).handleClaimPairForChat(ws, {
+      type: "claim_pair_for_chat",
+      requestId: "req-nofree",
+      chatId: chat.chatId,
+    });
+    const result = sent.find((m) => m.type === "pair_claim_failed");
+    expect(result?.code).toBe("NO_FREE_PAIR");
+    expect(chat.paired).toBe(false);
+
+    chats.delete(chat.chatId);
+  });
+
+  // CRITICAL: the must-fix from Codex review msg ..._268.
+  test("old isolated ClaudeThread close after claim does NOT reap paired chat", () => {
+    setupSlot("ready");
+    const chat = fns.createChatState("chat-claim-stale-close");
+    chat.ready = true;
+    chat.ws = makeChatWs(chat.chatId, 56);
+    chats.set(chat.chatId, chat);
+
+    // Wire the wireClaudeThreadEvents handlers (close handler from
+    // Issue #82 fix that would normally reap on close).
+    (fns as any).wireClaudeThreadEvents(chat);
+    const oldThread = chat.thread;
+
+    // Claim the chat.
+    const { ws, sent } = makeClaimMockWs();
+    (fns as any).handleClaimPairForChat(ws, {
+      type: "claim_pair_for_chat",
+      requestId: "req-stale-close",
+      chatId: chat.chatId,
+    });
+    expect(sent.find((m) => m.type === "pair_claimed")).toBeDefined();
+    expect(chat.paired).toBe(true);
+
+    // Now fire close on the OLD thread (simulates late close — e.g.
+    // app-server idle-timeouts the stale ClaudeThread connection,
+    // or daemon shutdown closes it). Pre-fix this would trigger
+    // reapChatState on the paired chat. Post-fix listeners are
+    // removed before close, so this is a no-op.
+    expect(() => oldThread.emit("close")).not.toThrow();
+
+    // Chat must STILL be paired + in chats Map.
+    expect(chats.has(chat.chatId)).toBe(true);
+    expect(chat.paired).toBe(true);
+    expect(chat.homePairId).toBe("default");
+    expect(__testing.pairs.get("default")!.proxyTuiSlot?.pairedChatId).toBe(chat.chatId);
+
+    chats.delete(chat.chatId);
+  });
+});

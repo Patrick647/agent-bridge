@@ -59,11 +59,14 @@ export interface AsyncFileLogger {
 
 // ── Rotation knobs (env-overridable) ──────────────────────────────────
 
-const LOG_MAX_SIZE_BYTES = parseInt(
+// `let` not `const` so test suites can override regardless of which
+// file imported log-writer first (Bun caches modules across test files,
+// so a test setting env after first import otherwise has no effect).
+let LOG_MAX_SIZE_BYTES = parseInt(
   process.env.AGENTBRIDGE_LOG_MAX_SIZE_BYTES ?? String(50 * 1024 * 1024),
   10,
 );
-const LOG_BACKUPS = parseInt(
+let LOG_BACKUPS = parseInt(
   process.env.AGENTBRIDGE_LOG_BACKUPS ?? "5",
   10,
 );
@@ -71,6 +74,12 @@ const LOG_BACKUPS = parseInt(
 // ── Per-file state ────────────────────────────────────────────────────
 
 const writers = new Map<string, WriteStream>();
+/** Streams that have been rotated away (end() called but flush async).
+ * Tracked separately from `writers` so `closeAllAsyncFileLoggers` can
+ * await their drain before process exit — pre-fix the rotated stream
+ * was simply orphaned from `writers` and a fast shutdown could lose
+ * its last buffered lines. (Codex review msg ..._268.) */
+const closingStreams = new Set<WriteStream>();
 /** Bytes written through THIS process to the file. Bootstrapped from
  * existing file size at open so rotation respects pre-existing content
  * (a 49 MB existing log will rotate on the next 1 MB written, not 49+
@@ -119,9 +128,19 @@ function rotateFile(filePath: string): void {
     // Close + drop the current stream first so the rename can succeed
     // on platforms where open files lock the inode (mostly Windows; on
     // Unix this is harmless but conceptually correct).
+    //
+    // Track the rotated-away stream in `closingStreams` so a fast
+    // daemon shutdown via closeAllAsyncFileLoggers awaits its flush
+    // instead of orphaning the last few buffered lines. (Codex review
+    // msg ..._268.)
     const current = writers.get(filePath);
     if (current && !current.destroyed) {
-      try { current.end(); } catch { /* best effort */ }
+      closingStreams.add(current);
+      try {
+        current.end(() => closingStreams.delete(current));
+      } catch {
+        closingStreams.delete(current);
+      }
     }
     writers.delete(filePath);
 
@@ -192,17 +211,34 @@ export function getAsyncFileLogger(filePath: string): AsyncFileLogger {
   };
 }
 
-/** Close all open file loggers — used by SIGTERM handlers for clean flush. */
+/** Close all open file loggers — used by SIGTERM handlers for clean flush.
+ * Awaits both currently-open streams AND any rotated-away streams still
+ * draining to disk, so the last few buffered lines aren't lost on a
+ * fast shutdown that races a recent rotation. */
 export async function closeAllAsyncFileLoggers(): Promise<void> {
   const all = [...writers.entries()];
+  const closing = [...closingStreams];
   writers.clear();
+  closingStreams.clear();
   bytesWritten.clear();
-  await Promise.all(all.map(([_path, stream]) =>
+  const pendingActive = all.map(([_path, stream]) =>
     new Promise<void>((resolve) => {
       if (stream.destroyed) { resolve(); return; }
       stream.end(() => resolve());
     }),
-  ));
+  );
+  const pendingClosing = closing.map((stream) =>
+    new Promise<void>((resolve) => {
+      // already ended in rotateFile; just wait for the underlying file
+      // descriptor to actually drain. listening for 'finish' is the
+      // safest signal; fall back to 'close' for older Node.
+      if (stream.destroyed) { resolve(); return; }
+      const done = () => resolve();
+      stream.once("finish", done);
+      stream.once("close", done);
+    }),
+  );
+  await Promise.all([...pendingActive, ...pendingClosing]);
 }
 
 /** Exposed for tests — pure function inspecting current state. */
@@ -212,4 +248,13 @@ export function _testingState() {
     LOG_MAX_SIZE_BYTES,
     LOG_BACKUPS,
   };
+}
+
+/** Test-only: override rotation knobs at runtime so the log-writer
+ * test can set small thresholds regardless of which other test file
+ * already imported this module first (Bun shares module cache across
+ * test files, so module-load env capture is order-dependent). */
+export function _testingSetConstants(opts: { maxSize?: number; backups?: number }) {
+  if (opts.maxSize !== undefined) LOG_MAX_SIZE_BYTES = opts.maxSize;
+  if (opts.backups !== undefined) LOG_BACKUPS = opts.backups;
 }

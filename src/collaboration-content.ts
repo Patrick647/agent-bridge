@@ -58,6 +58,16 @@ export const VALID_WORKFLOW_PRESETS: readonly WorkflowPreset[] = [
   "codex-implements",
 ] as const;
 
+/** One-line description per preset — single source of truth for
+ * `abg init --list-workflows` discovery output. Keep these short and
+ * actionable; the actual content lives in the per-preset section
+ * constants below. Adding a new preset = add to VALID_WORKFLOW_PRESETS
+ * + add the corresponding section constants + describe here. */
+export const WORKFLOW_DESCRIPTIONS: Record<WorkflowPreset, string> = {
+  "default": "generic 'propose split per task' content; no fixed role assignment",
+  "codex-implements": "fixed roles: Codex implements + verifies; Claude designs + reviews + handles git",
+};
+
 export function isValidWorkflowPreset(value: string): value is WorkflowPreset {
   return (VALID_WORKFLOW_PRESETS as readonly string[]).includes(value);
 }

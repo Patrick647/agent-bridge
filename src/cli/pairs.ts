@@ -231,9 +231,10 @@ async function runPairsRm(args: string[]): Promise<void> {
 }
 
 async function runPairsClaim(args: string[]): Promise<void> {
-  // Parse: CHAT_ID + optional --pair NAME
+  // Parse: CHAT_ID + optional --pair NAME + optional --force
   let chatId: string | undefined;
   let pairId: string | undefined;
+  let force = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--pair") {
@@ -249,11 +250,15 @@ async function runPairsClaim(args: string[]): Promise<void> {
       pairId = a.slice("--pair=".length);
       continue;
     }
+    if (a === "--force") {
+      force = true;
+      continue;
+    }
     if (chatId === undefined) {
       chatId = a;
       continue;
     }
-    console.error(`Error: unexpected extra argument "${a}". Usage: abg pairs claim CHAT_ID [--pair NAME]`);
+    console.error(`Error: unexpected extra argument "${a}". Usage: abg pairs claim CHAT_ID [--pair NAME] [--force]`);
     process.exit(1);
   }
   if (!chatId) {
@@ -271,11 +276,17 @@ async function runPairsClaim(args: string[]): Promise<void> {
   let response: any;
   try {
     response = await controlWsRequest<
-      { type: "claim_pair_for_chat"; requestId: string; chatId: string; pairId?: string },
+      { type: "claim_pair_for_chat"; requestId: string; chatId: string; pairId?: string; force?: boolean },
       any
     >(
       CONTROL_PORT_DEFAULT,
-      { type: "claim_pair_for_chat", requestId: reqId, chatId, ...(pairId ? { pairId } : {}) },
+      {
+        type: "claim_pair_for_chat",
+        requestId: reqId,
+        chatId,
+        ...(pairId ? { pairId } : {}),
+        ...(force ? { force: true } : {}),
+      },
       (msg): msg is any => {
         return msg && (msg.type === "pair_claimed" || msg.type === "pair_claim_failed") && msg.requestId === reqId;
       },
@@ -304,16 +315,18 @@ Usage:
   abg pairs rm NAME [--forget] [--force]
                                      # destroy a pair (and optionally remove
                                      # its registry entry)
-  abg pairs claim CHAT_ID [--pair NAME]
+  abg pairs claim CHAT_ID [--pair NAME] [--force]
                                      # retroactively pair an existing isolated
                                      # chat with a free proxy TUI slot
                                      # (find CHAT_IDs via \`abg status\`)
 
 Flags:
-  --forget   Remove the registry entry so a future \`ensure_pair\` re-allocates
+  --forget   (rm) Remove the registry entry so a future \`ensure_pair\` re-allocates
              from scratch (use after PAIR_PORTS_BUSY to release stale ports).
-  --force    Tear down the pair even if it has a paired Claude. Without
-             --force, paired-live pairs return PAIR_BUSY_NOT_FORCED.
+  --force    (rm) Tear down the pair even if it has a paired Claude.
+             (claim) Claim even if the chat's isolated bootstrap is in flight
+             (paired readiness derives from proxy slot; racing isolated
+             emissions are ignored).
   --pair NAME  (claim only) target a specific pair instead of FIFO-first-free.
 `.trim());
 }

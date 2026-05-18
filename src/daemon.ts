@@ -1046,7 +1046,7 @@ function handleClaimPairForChat(
   ws: ServerWebSocket<ControlSocketData>,
   message: Extract<ControlClientMessage, { type: "claim_pair_for_chat" }>,
 ): void {
-  const { chatId, pairId, requestId } = message;
+  const { chatId, pairId, requestId, force } = message;
 
   const state = chats.get(chatId);
   if (!state) {
@@ -1066,6 +1066,33 @@ function handleClaimPairForChat(
       chatId,
       code: "CHAT_ALREADY_PAIRED",
       message: `Chat "${chatId}" is already paired (homePairId=${state.homePairId}).`,
+    });
+    return;
+  }
+  // Reject claim on a chat whose frontend WS has detached. Setting
+  // `pairedChatId` to a deletable ChatState produces a dangling pair
+  // slot when the reaper deletes the chat. (Codex review msg ..._268.)
+  if (state.ws === null) {
+    sendProtocolMessage(ws, {
+      type: "pair_claim_failed",
+      requestId,
+      chatId,
+      code: "CHAT_DISCONNECTED",
+      message: `Chat "${chatId}" has no live bridge connection (in reap grace window). Reconnect Claude first, then retry claim.`,
+    });
+    return;
+  }
+  // Reject claim during isolated bootstrap in flight unless --force.
+  // The race: bootstrap promise resolves AFTER claim → sets
+  // state.ready=true + emits system_isolated_ready, contradicting
+  // paired semantics. (Codex review msg ..._268.)
+  if (!state.ready && !force) {
+    sendProtocolMessage(ws, {
+      type: "pair_claim_failed",
+      requestId,
+      chatId,
+      code: "CHAT_NOT_READY",
+      message: `Chat "${chatId}" isolated thread is not yet ready (bootstrap in flight). Retry shortly, or pass --force to claim anyway (paired readiness will derive from the proxy slot, racing isolated-bootstrap emissions are ignored).`,
     });
     return;
   }
@@ -1137,6 +1164,26 @@ function handleClaimPairForChat(
       });
       return;
     }
+  }
+
+  // Detach event handlers from the chat's OLD isolated ClaudeThread
+  // BEFORE flipping paired state. (Codex review msg ..._268.) The
+  // wireClaudeThreadEvents handlers installed when the chat was
+  // isolated capture `state` + `chatId` by closure; they include the
+  // Issue #82 close-handler that calls reapChatState on unexpected
+  // close. After pairing, the old thread is dormant but its close
+  // event could still fire (daemon shutdown, network blip, idle
+  // timeout in app-server) — without listener removal that would
+  // reap the now-paired chat, leaving the pair slot with a stale
+  // pairedChatId pointing at a deleted ChatState.
+  //
+  // Then close the old thread to release its WS resource. The close
+  // event will fire but there are no listeners to react to it.
+  try { state.thread.removeAllListeners(); } catch (err: any) {
+    log(`[${chatId}] claim_pair_for_chat: removeAllListeners threw: ${err?.message ?? err}`);
+  }
+  try { state.thread.close(); } catch (err: any) {
+    log(`[${chatId}] claim_pair_for_chat: old thread.close() threw: ${err?.message ?? err}`);
   }
 
   // Effect the claim. Mirrors the FIFO claim path in attachClaude.
@@ -2465,6 +2512,8 @@ export const __testing = {
     handleEnsurePair,
     handleDestroyPair,
     handleListPairs,
+    /** 2026-05-18: retroactive pair claim handler exposed for regression tests. */
+    handleClaimPairForChat,
     /** STM v2.3 §D4 / §D6 P3-cleanup — attach flow exposed so tests can verify claude_connect_result. */
     attachClaude,
     /** Bug regression E (2026-05-17): exposed so EPIPE/stderr-broken test

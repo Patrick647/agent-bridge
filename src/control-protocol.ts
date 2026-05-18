@@ -161,9 +161,9 @@ export type ControlClientMessage =
   // fires when a Claude attaches AFTER a proxy TUI slot is unpaired.
   // If chats attached BEFORE the TUI came up, they're stuck isolated.
   // `claim_pair_for_chat` lets a user (via `abg pairs claim CHAT_ID
-  // [--pair NAME]`) explicitly pair an existing isolated chat with a
-  // free proxy slot.
-  | { type: "claim_pair_for_chat"; requestId: string; chatId: string; pairId?: string };
+  // [--pair NAME] [--force]`) explicitly pair an existing isolated
+  // chat with a free proxy slot.
+  | { type: "claim_pair_for_chat"; requestId: string; chatId: string; pairId?: string; force?: boolean };
 
 export type ControlServerMessage =
   | { type: "codex_to_claude"; chatId?: string; message: BridgeMessage }
@@ -231,7 +231,15 @@ export type ControlServerMessage =
       type: "pair_claim_failed";
       requestId: string;
       chatId: string;
-      code: "CHAT_NOT_FOUND" | "CHAT_ALREADY_PAIRED" | "NO_FREE_PAIR" | "PAIR_NOT_LIVE" | "PAIR_NOT_FOUND" | "PAIR_BUSY";
+      code:
+        | "CHAT_NOT_FOUND"
+        | "CHAT_ALREADY_PAIRED"
+        | "CHAT_DISCONNECTED"
+        | "CHAT_NOT_READY"
+        | "NO_FREE_PAIR"
+        | "PAIR_NOT_LIVE"
+        | "PAIR_NOT_FOUND"
+        | "PAIR_BUSY";
       message: string;
     };
 
