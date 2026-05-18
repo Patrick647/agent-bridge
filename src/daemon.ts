@@ -615,6 +615,21 @@ const ISOLATED_BOOTSTRAP_RETRY_DELAY_MS = parseInt(
   10,
 );
 
+/**
+ * Audit D2 helper (2026-05-18): resolve the appServerUrl for a chat's
+ * home pair, falling back to default if the pair is no longer in the
+ * Map (race during destroy). Makes dependencies on `pairs.get(homePairId)`
+ * explicit instead of relying on the module-level `codex` (which happens
+ * to be default's). Currently every isolated-bootstrap call site has
+ * state.homePairId === "default", so this is a defensive change with
+ * no behavior change today — but it prevents silent mis-targeting if
+ * a future code path homes an isolated chat on a non-default pair.
+ */
+function resolveHomePairAppServerUrl(state: ChatState): string {
+  const homePair = state.homePairId ? pairs.get(state.homePairId) : undefined;
+  return homePair?.codex.appServerUrl ?? codex.appServerUrl;
+}
+
 function bootstrapIsolatedThread(state: ChatState, attempt = 1): void {
   state.thread.bootstrap()
     .then((threadId) => {
@@ -633,8 +648,14 @@ function bootstrapIsolatedThread(state: ChatState, attempt = 1): void {
           // constructing a replacement so a half-open WS / RPC handle from
           // the failed attempt does not leak.
           try { state.thread.close(); } catch {}
+          // Audit D2 (2026-05-18): derive target appServerUrl from
+          // state.homePairId, not module-level `codex`. Today this is
+          // equivalent (isolated chats always home on "default" — see
+          // transitionToIsolated §6.5 P3c). Making the dependency
+          // explicit prevents future code paths that home isolated
+          // chats on non-default pairs from silently mis-targeting.
           state.thread = new ClaudeThread({
-            appServerUrl: codex.appServerUrl,
+            appServerUrl: resolveHomePairAppServerUrl(state),
             chatId: state.chatId,
             logFile: stateDir.logFile,
             cwd: process.cwd(),
@@ -697,8 +718,12 @@ function transitionToIsolated(state: ChatState, reason: string): void {
   emitToChat(state, systemMessage("system_pair_torn_down",
     `[system] ${reason}. Future replies will use a fresh isolated Codex thread (no prior shared-TUI context carried over).`));
   // Re-bootstrap as isolated. Same chatId, new ClaudeThread.
+  // Audit D2 (2026-05-18): derive target from state.homePairId (which we
+  // just set to "default" above). Explicit pair lookup makes the
+  // dependency visible — same behavior as module-level `codex.appServerUrl`
+  // when homePairId is "default".
   state.thread = new ClaudeThread({
-    appServerUrl: codex.appServerUrl,
+    appServerUrl: resolveHomePairAppServerUrl(state),
     chatId: state.chatId,
     logFile: stateDir.logFile,
     cwd: process.cwd(),
@@ -1191,6 +1216,13 @@ async function attachClaude(
 }
 
 function createChatState(chatId: string): ChatState {
+  // Audit D2 (2026-05-18): construct thread with default pair's
+  // appServerUrl — chat is created with homePairId="default"; the
+  // explicit pair lookup matches that. If FIFO claim later re-homes
+  // this chat (state.paired=true), the thread is unused (paired chats
+  // share TUI's thread). If transitionToIsolated re-homes, it replaces
+  // state.thread with a fresh one via resolveHomePairAppServerUrl too.
+  const defaultPairForBootstrap = pairs.get("default");
   const state: ChatState = {
     chatId,
     // STM v2.3 §6.1 P1: every chat is associated with the default pair.
@@ -1198,7 +1230,7 @@ function createChatState(chatId: string): ChatState {
     homePairId: "default",
     ws: null,
     thread: new ClaudeThread({
-      appServerUrl: codex.appServerUrl,
+      appServerUrl: defaultPairForBootstrap?.codex.appServerUrl ?? codex.appServerUrl,
       chatId,
       logFile: stateDir.logFile,
       cwd: process.cwd(),

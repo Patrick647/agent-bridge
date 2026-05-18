@@ -2896,6 +2896,10 @@ function pairChat(state) {
 }
 var ISOLATED_BOOTSTRAP_MAX_ATTEMPTS = parseInt(process.env.AGENTBRIDGE_ISOLATED_BOOTSTRAP_MAX_ATTEMPTS ?? "2", 10);
 var ISOLATED_BOOTSTRAP_RETRY_DELAY_MS = parseInt(process.env.AGENTBRIDGE_ISOLATED_BOOTSTRAP_RETRY_DELAY_MS ?? "2000", 10);
+function resolveHomePairAppServerUrl(state) {
+  const homePair = state.homePairId ? pairs.get(state.homePairId) : undefined;
+  return homePair?.codex.appServerUrl ?? codex.appServerUrl;
+}
 function bootstrapIsolatedThread(state, attempt = 1) {
   state.thread.bootstrap().then((threadId) => {
     state.ready = true;
@@ -2910,7 +2914,7 @@ function bootstrapIsolatedThread(state, attempt = 1) {
           state.thread.close();
         } catch {}
         state.thread = new ClaudeThread({
-          appServerUrl: codex.appServerUrl,
+          appServerUrl: resolveHomePairAppServerUrl(state),
           chatId: state.chatId,
           logFile: stateDir.logFile,
           cwd: process.cwd()
@@ -2955,7 +2959,7 @@ function transitionToIsolated(state, reason) {
   state.pairedTurnSawAgentMessage = false;
   emitToChat(state, systemMessage("system_pair_torn_down", `[system] ${reason}. Future replies will use a fresh isolated Codex thread (no prior shared-TUI context carried over).`));
   state.thread = new ClaudeThread({
-    appServerUrl: codex.appServerUrl,
+    appServerUrl: resolveHomePairAppServerUrl(state),
     chatId: state.chatId,
     logFile: stateDir.logFile,
     cwd: process.cwd()
@@ -3327,12 +3331,13 @@ async function attachClaude(ws, requestedChatId, requestedPairId, requestId) {
   }
 }
 function createChatState(chatId) {
+  const defaultPairForBootstrap = pairs.get("default");
   const state = {
     chatId,
     homePairId: "default",
     ws: null,
     thread: new ClaudeThread({
-      appServerUrl: codex.appServerUrl,
+      appServerUrl: defaultPairForBootstrap?.codex.appServerUrl ?? codex.appServerUrl,
       chatId,
       logFile: stateDir.logFile,
       cwd: process.cwd()
