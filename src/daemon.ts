@@ -1701,19 +1701,35 @@ function sendProtocolMessage(ws: ServerWebSocket<ControlSocketData>, message: Co
 }
 
 function currentStatus(): DaemonStatus {
-  const snapshot = tuiConnectionState.snapshot();
-  // STM v2.3 §D7 P3: aggregate status. v2.2 top-level fields are kept
-  // populated from the default pair (URLs always — they're config; runtime
-  // fields reflect actual state). New v2.3 code reads detail from `pairs`.
+  // Audit D1 fix (2026-05-18): top-level runtime fields now aggregate
+  // across all live pairs instead of reflecting default-pair only.
+  // Pre-fix a caller hitting /healthz read default's empty state even
+  // when only a non-default pair was active — misleading top-level
+  // status. Per audit doc decision D1 option B.
+  //
+  // URLs stay default-only (they're config-level documentation of
+  // default's registered ports). Runtime state (TUI connected, thread
+  // active, etc.) now reflects "any live pair has X" semantics.
+  const livePairs = [...pairs.values()].filter((p) => p.isLive);
+  const anyTuiConnected = livePairs.some((p) => p.tuiConnectionState.snapshot().tuiConnected);
+  const anyProxyTuiConnected = livePairs.some((p) => p.proxyTuiSlot !== null);
+  const anyCanReply = livePairs.some((p) => p.tuiConnectionState.canReply());
+  // Surface ANY pair's active threadId. If multiple pairs have threads,
+  // prefer default's (back-compat) else first live one with a thread.
+  const defaultPair = pairs.get("default");
+  const defaultThreadId = defaultPair?.codex.activeThreadId ?? null;
+  const aggregateThreadId =
+    defaultThreadId ?? livePairs.map((p) => p.codex.activeThreadId).find((t) => !!t) ?? null;
+
   return {
-    bridgeReady: tuiConnectionState.canReply() || codexBootstrapped,
+    bridgeReady: anyCanReply || codexBootstrapped,
     pid: process.pid,
     // URLs are config: always populated from the default pair's registered ports.
     proxyUrl: codex.proxyUrl,
     appServerUrl: codex.appServerUrl,
-    tuiConnected: snapshot.tuiConnected,
-    proxyTuiConnected: proxyTuiSlot !== null,
-    threadId: codex.activeThreadId,
+    tuiConnected: anyTuiConnected,
+    proxyTuiConnected: anyProxyTuiConnected,
+    threadId: aggregateThreadId,
     // Aggregates across all chats / pairs.
     attachedClaudeCount: [...chats.values()].filter((s) => s.ws).length,
     queuedMessageCount: [...chats.values()].reduce(
@@ -2093,7 +2109,19 @@ function shutdown(reason: string) {
   chats.clear();
   controlServer?.stop();
   controlServer = null;
-  codex.stop();
+  // Audit D3 fix (2026-05-18): iterate ALL live pairs' codex adapters,
+  // not just the default. Pre-fix `codex.stop()` only stopped the
+  // module-level default's adapter, orphaning non-default pairs' codex
+  // children to be reparented to init. Multi-pair crash-isolation
+  // requires all pairs' codex children to terminate when daemon dies.
+  for (const pair of pairs.values()) {
+    if (!pair.isLive) continue;
+    try {
+      pair.codex.stop();
+    } catch (err: any) {
+      log(`[pair=${pair.pairId}] shutdown: codex.stop() threw — ${err?.message ?? err}`);
+    }
+  }
   removePidFile();
   removeStatusFile();
   // Performance fix (2026-05-17 P0): flush async file loggers before

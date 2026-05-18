@@ -3692,15 +3692,21 @@ function sendProtocolMessage(ws, message) {
   }
 }
 function currentStatus() {
-  const snapshot = tuiConnectionState.snapshot();
+  const livePairs = [...pairs.values()].filter((p) => p.isLive);
+  const anyTuiConnected = livePairs.some((p) => p.tuiConnectionState.snapshot().tuiConnected);
+  const anyProxyTuiConnected = livePairs.some((p) => p.proxyTuiSlot !== null);
+  const anyCanReply = livePairs.some((p) => p.tuiConnectionState.canReply());
+  const defaultPair = pairs.get("default");
+  const defaultThreadId = defaultPair?.codex.activeThreadId ?? null;
+  const aggregateThreadId = defaultThreadId ?? livePairs.map((p) => p.codex.activeThreadId).find((t) => !!t) ?? null;
   return {
-    bridgeReady: tuiConnectionState.canReply() || codexBootstrapped,
+    bridgeReady: anyCanReply || codexBootstrapped,
     pid: process.pid,
     proxyUrl: codex.proxyUrl,
     appServerUrl: codex.appServerUrl,
-    tuiConnected: snapshot.tuiConnected,
-    proxyTuiConnected: proxyTuiSlot !== null,
-    threadId: codex.activeThreadId,
+    tuiConnected: anyTuiConnected,
+    proxyTuiConnected: anyProxyTuiConnected,
+    threadId: aggregateThreadId,
     attachedClaudeCount: [...chats.values()].filter((s) => s.ws).length,
     queuedMessageCount: [...chats.values()].reduce((n, s) => n + s.bufferedMessages.length + s.statusBuffer.size, 0),
     pairs: [...pairs.values()].map((pair) => ({
@@ -3950,7 +3956,15 @@ function shutdown(reason) {
   chats.clear();
   controlServer?.stop();
   controlServer = null;
-  codex.stop();
+  for (const pair of pairs.values()) {
+    if (!pair.isLive)
+      continue;
+    try {
+      pair.codex.stop();
+    } catch (err) {
+      log(`[pair=${pair.pairId}] shutdown: codex.stop() threw \u2014 ${err?.message ?? err}`);
+    }
+  }
   removePidFile();
   removeStatusFile();
   closeAllAsyncFileLoggers().then(() => process.exit(0)).catch(() => process.exit(0));
