@@ -2,10 +2,19 @@ import type { BridgeMessage } from "./types";
 
 /**
  * STM v2.3 §D7 P3: per-pair status snapshot. One entry per pair in
- * `DaemonStatus.pairs`. v2.2 `proxyUrl` / `appServerUrl` / `tuiConnected`
- * / `proxyTuiConnected` / `threadId` top-level fields stay populated from
- * the default pair as a backward-compatibility shim for existing CLI /
- * test readers.
+ * `DaemonStatus.pairs`.
+ *
+ * Top-level `DaemonStatus` field semantics (audit D1, 2026-05-18):
+ *   - `proxyUrl` / `appServerUrl`: config — always populated from the
+ *     default pair's registered ports (back-compat).
+ *   - `tuiConnected` / `proxyTuiConnected` / `bridgeReady`: aggregate
+ *     — true when ANY live pair has the corresponding state. v2.2
+ *     callers reading these as "default pair only" should migrate to
+ *     `pairs[].X`.
+ *   - `threadId`: default pair's active thread if present (back-compat).
+ *     If default has none, fall back to the SOLE non-default pair's
+ *     thread; if multiple non-default pairs have threads, null (the
+ *     value is ambiguous — callers must read `pairs[].threadId`).
  */
 export interface PairStatus {
   pairId: string;
@@ -26,22 +35,27 @@ export interface PairStatus {
 }
 
 export interface DaemonStatus {
+  /** Audit D1: true when ANY live pair can reply, OR default is live AND
+   * bootstrapped. Aggregate semantics in v2.3+. */
   bridgeReady: boolean;
   pid: number;
   /**
-   * v2.2-compatible top-level mirror of the default pair's status. The
-   * URL fields are config (always populated from the default pair's
-   * registered ports). The runtime fields reflect actual state — `null`
-   * when not yet known (e.g. threadId before bootstrap, or when default
-   * is destroyed entirely in a future phase).
+   * Top-level fields. URLs are default-pair config (back-compat).
+   * Runtime fields (`tuiConnected`, `proxyTuiConnected`, `threadId`)
+   * are aggregate over live pairs per audit D1 — see PairStatus doc.
    *
-   * Existing CLI and test code that reads these top-level fields keeps
-   * working. New v2.3 code should prefer the `pairs` array below.
+   * v2.2 callers that read these as "default pair only" may surface
+   * different values in v2.3+. Use `pairs[].X` for per-pair detail.
    */
   proxyUrl: string;
   appServerUrl: string;
+  /** Aggregate: any live pair has a TUI attached. */
   tuiConnected: boolean;
+  /** Aggregate: any live pair has a `--via-proxy` TUI attached. */
   proxyTuiConnected: boolean;
+  /** Default's thread if present (back-compat), else sole non-default
+   * thread, else null (ambiguous when multiple non-default pairs have
+   * threads — read `pairs[].threadId`). */
   threadId: string | null;
   /** Aggregate count across all pairs + isolated chats. */
   attachedClaudeCount: number;

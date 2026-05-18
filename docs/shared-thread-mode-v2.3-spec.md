@@ -340,6 +340,16 @@ D5 changes (filesystem layout, fake-daemon fixtures, kill walker) land in **P3**
 
 **Decision: aggregate `DaemonStatus` with a flat-compatibility shim for `default`.**
 
+> **Amendment (2026-05-18, audit D1)**: top-level runtime fields
+> (`tuiConnected`, `proxyTuiConnected`, `bridgeReady`) shifted from
+> "default pair only" to **aggregate over live pairs** semantics.
+> v2.2 callers reading them as default-only may see different values
+> when non-default pairs are active. `pairs[]` is the canonical
+> per-pair source. `proxyUrl` / `appServerUrl` stay default-only
+> (config-level). `threadId` is default's if present, else the sole
+> non-default thread (null when ambiguous). See implementation in
+> `currentStatus()` and rationale in `docs/multi-pair-globals-audit.md`.
+
 `DaemonStatus` in `src/control-protocol.ts` becomes:
 
 ```typescript

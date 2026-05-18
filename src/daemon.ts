@@ -1746,15 +1746,28 @@ function currentStatus(): DaemonStatus {
   const anyTuiConnected = livePairs.some((p) => p.tuiConnectionState.snapshot().tuiConnected);
   const anyProxyTuiConnected = livePairs.some((p) => p.proxyTuiSlot !== null);
   const anyCanReply = livePairs.some((p) => p.tuiConnectionState.canReply());
-  // Surface ANY pair's active threadId. If multiple pairs have threads,
-  // prefer default's (back-compat) else first live one with a thread.
+  // threadId aggregation: default's threadId is back-compat top-level
+  // surface (matches v2.2 callers reading top-level `threadId`). If
+  // default has no thread, fall back to the SOLE non-default thread —
+  // when multiple non-default pairs have threads the top-level field
+  // is genuinely ambiguous, return null and force callers to read
+  // `pairs[].threadId`. (Codex review msg ..._248.)
   const defaultPair = pairs.get("default");
   const defaultThreadId = defaultPair?.codex.activeThreadId ?? null;
-  const aggregateThreadId =
-    defaultThreadId ?? livePairs.map((p) => p.codex.activeThreadId).find((t) => !!t) ?? null;
+  const nonDefaultThreadIds = livePairs
+    .filter((p) => p.pairId !== "default")
+    .map((p) => p.codex.activeThreadId)
+    .filter((t): t is string => !!t);
+  const aggregateThreadId = defaultThreadId
+    ?? (nonDefaultThreadIds.length === 1 ? nonDefaultThreadIds[0] : null);
 
+  // `codexBootstrapped` is a default-pair flag — only meaningful when
+  // default is currently live. Belt-and-suspenders with the explicit
+  // reset in destroyPair (Codex review msg ..._248): if anything ever
+  // forgets to clear the flag, this gating prevents a stale true value.
+  const defaultLive = pairs.get("default")?.isLive === true;
   return {
-    bridgeReady: anyCanReply || codexBootstrapped,
+    bridgeReady: anyCanReply || (defaultLive && codexBootstrapped),
     pid: process.pid,
     // URLs are config: always populated from the default pair's registered ports.
     proxyUrl: codex.proxyUrl,
@@ -1818,16 +1831,29 @@ function systemMessage(idPrefix: string, content: string): BridgeMessage {
 function scheduleIdleShutdown() {
   cancelIdleShutdown();
   if ([...chats.values()].some((s) => s.ws !== null)) return; // still have a live claude
-  if (tuiConnectionState.snapshot().tuiConnected) return;
+  // Audit D1 follow-up (Codex review msg ..._248): aggregate TUI
+  // connectivity across all live pairs. Pre-fix this read default
+  // pair's `tuiConnectionState` only, so a live non-default pair TUI
+  // didn't prevent idle shutdown — daemon would terminate while a
+  // user had a `--pair work` TUI connected.
+  if (anyLivePairTuiConnected()) return;
 
   log(`No clients connected. Daemon will shut down in ${IDLE_SHUTDOWN_MS}ms if no one reconnects.`);
   idleShutdownTimer = setTimeout(() => {
-    if ([...chats.values()].some((s) => s.ws !== null) || tuiConnectionState.snapshot().tuiConnected) {
+    if ([...chats.values()].some((s) => s.ws !== null) || anyLivePairTuiConnected()) {
       log("Idle shutdown cancelled: client reconnected during grace period");
       return;
     }
     shutdown("idle — no clients connected");
   }, IDLE_SHUTDOWN_MS);
+}
+
+function anyLivePairTuiConnected(): boolean {
+  for (const pair of pairs.values()) {
+    if (!pair.isLive) continue;
+    if (pair.tuiConnectionState.snapshot().tuiConnected) return true;
+  }
+  return false;
 }
 
 function cancelIdleShutdown() {
@@ -2063,6 +2089,15 @@ async function destroyPair(pairId: string): Promise<void> {
   //    codex.stop() so the exit handler's `pair.isLive = false` doesn't
   //    fire and confuse downstream observers — we're about to set
   //    isLive=false explicitly here anyway.
+  //
+  // Audit D1 follow-up (Codex review msg ..._248): because we detach
+  // handlers BEFORE codex.stop(), the default pair's `exit` handler
+  // (which clears `codexBootstrapped`) never fires when destroying the
+  // default pair. Explicitly reset the flag here so top-level
+  // `bridgeReady` doesn't stay true after default is gone.
+  if (pair.pairId === "default") {
+    codexBootstrapped = false;
+  }
   detachPairHandlers(pair);
 
   // 3. Transition the paired Claude (if any) to isolated per §6.5

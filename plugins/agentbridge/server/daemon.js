@@ -3703,9 +3703,11 @@ function currentStatus() {
   const anyCanReply = livePairs.some((p) => p.tuiConnectionState.canReply());
   const defaultPair = pairs.get("default");
   const defaultThreadId = defaultPair?.codex.activeThreadId ?? null;
-  const aggregateThreadId = defaultThreadId ?? livePairs.map((p) => p.codex.activeThreadId).find((t) => !!t) ?? null;
+  const nonDefaultThreadIds = livePairs.filter((p) => p.pairId !== "default").map((p) => p.codex.activeThreadId).filter((t) => !!t);
+  const aggregateThreadId = defaultThreadId ?? (nonDefaultThreadIds.length === 1 ? nonDefaultThreadIds[0] : null);
+  const defaultLive = pairs.get("default")?.isLive === true;
   return {
-    bridgeReady: anyCanReply || codexBootstrapped,
+    bridgeReady: anyCanReply || defaultLive && codexBootstrapped,
     pid: process.pid,
     proxyUrl: codex.proxyUrl,
     appServerUrl: codex.appServerUrl,
@@ -3748,16 +3750,25 @@ function scheduleIdleShutdown() {
   cancelIdleShutdown();
   if ([...chats.values()].some((s) => s.ws !== null))
     return;
-  if (tuiConnectionState.snapshot().tuiConnected)
+  if (anyLivePairTuiConnected())
     return;
   log(`No clients connected. Daemon will shut down in ${IDLE_SHUTDOWN_MS}ms if no one reconnects.`);
   idleShutdownTimer = setTimeout(() => {
-    if ([...chats.values()].some((s) => s.ws !== null) || tuiConnectionState.snapshot().tuiConnected) {
+    if ([...chats.values()].some((s) => s.ws !== null) || anyLivePairTuiConnected()) {
       log("Idle shutdown cancelled: client reconnected during grace period");
       return;
     }
     shutdown("idle \u2014 no clients connected");
   }, IDLE_SHUTDOWN_MS);
+}
+function anyLivePairTuiConnected() {
+  for (const pair of pairs.values()) {
+    if (!pair.isLive)
+      continue;
+    if (pair.tuiConnectionState.snapshot().tuiConnected)
+      return true;
+  }
+  return false;
 }
 function cancelIdleShutdown() {
   if (idleShutdownTimer) {
@@ -3901,6 +3912,9 @@ async function destroyPair(pairId) {
   if (pair.proxyTuiSlot?.pairReapTimer) {
     clearTimeout(pair.proxyTuiSlot.pairReapTimer);
     pair.proxyTuiSlot.pairReapTimer = null;
+  }
+  if (pair.pairId === "default") {
+    codexBootstrapped = false;
   }
   detachPairHandlers(pair);
   const pairedChatId = pair.proxyTuiSlot?.pairedChatId ?? null;
