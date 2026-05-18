@@ -1,5 +1,5 @@
 /**
- * Async file logger — shared WriteStream pool keyed by file path.
+ * Async file logger with size-based rotation.
  *
  * Replaces `appendFileSync` in the hot path. `appendFileSync` was
  * synchronously blocking the event loop on every log line; with a
@@ -24,9 +24,31 @@
  * with P1 (proxy frame logs gated behind AGENTBRIDGE_DEBUG_PROXY),
  * the daemon's per-message log overhead drops from O(disk-IO sync)
  * to O(buffer-write) on the hot path.
+ *
+ * Rotation (2026-05-18 P2): per-file byte counter. When a write would
+ * push a file past `LOG_MAX_SIZE_BYTES` (default 50 MB), we rename
+ * `path.log` → `path.log.1`, shift `.log.N` → `.log.(N+1)` up to
+ * `LOG_BACKUPS` (default 5), drop any beyond, then open a fresh
+ * stream at the original path. Rotation is synchronous (renameSync)
+ * because writes need a stable target. Daemon SIGTERM-class events
+ * are rare; busy daemons rotate every few minutes at most.
+ *
+ * Historical context: a daemon EPIPE-uncaught-exception loop wrote
+ * 8.5 GB to `agentbridge.log` before user noticed (fixed by sticky
+ * stderr-broken flag in daemon.ts). Rotation is the operational
+ * defense: even if a similar bug reappears, disk impact is bounded
+ * by `LOG_MAX_SIZE_BYTES * (LOG_BACKUPS + 1)` (default 300 MB).
  */
 
-import { createWriteStream, mkdirSync, existsSync, type WriteStream } from "node:fs";
+import {
+  createWriteStream,
+  mkdirSync,
+  existsSync,
+  statSync,
+  renameSync,
+  unlinkSync,
+  type WriteStream,
+} from "node:fs";
 import { dirname } from "node:path";
 
 export interface AsyncFileLogger {
@@ -35,7 +57,39 @@ export interface AsyncFileLogger {
   close(): Promise<void>;
 }
 
+// ── Rotation knobs (env-overridable) ──────────────────────────────────
+
+const LOG_MAX_SIZE_BYTES = parseInt(
+  process.env.AGENTBRIDGE_LOG_MAX_SIZE_BYTES ?? String(50 * 1024 * 1024),
+  10,
+);
+const LOG_BACKUPS = parseInt(
+  process.env.AGENTBRIDGE_LOG_BACKUPS ?? "5",
+  10,
+);
+
+// ── Per-file state ────────────────────────────────────────────────────
+
 const writers = new Map<string, WriteStream>();
+/** Bytes written through THIS process to the file. Bootstrapped from
+ * existing file size at open so rotation respects pre-existing content
+ * (a 49 MB existing log will rotate on the next 1 MB written, not 49+
+ * extra MB). */
+const bytesWritten = new Map<string, number>();
+/** Flag to prevent reentrant rotation during the rotation itself
+ * (defensive — rotation is sync but emits a logging call via the
+ * stream error path if rename throws). */
+const rotating = new Set<string>();
+
+/** Bootstrap the per-file byte counter from disk on first use of a path.
+ * Must run BEFORE the rotation check (a pre-existing 49 MB log should
+ * rotate on the next byte, not after another 49 MB of writes). */
+function ensureBytesCounterBootstrapped(filePath: string): void {
+  if (bytesWritten.has(filePath)) return;
+  let initialSize = 0;
+  try { initialSize = statSync(filePath).size; } catch { /* file doesn't exist yet */ }
+  bytesWritten.set(filePath, initialSize);
+}
 
 function getStream(filePath: string): WriteStream {
   const existing = writers.get(filePath);
@@ -52,12 +106,74 @@ function getStream(filePath: string): WriteStream {
   return stream;
 }
 
+/**
+ * Rotate `path.log` → `path.log.1`, shift older backups one slot,
+ * drop any beyond `LOG_BACKUPS`, then open a fresh stream at the
+ * original path. Sync because writes need a stable target during
+ * the swap.
+ */
+function rotateFile(filePath: string): void {
+  if (rotating.has(filePath)) return;
+  rotating.add(filePath);
+  try {
+    // Close + drop the current stream first so the rename can succeed
+    // on platforms where open files lock the inode (mostly Windows; on
+    // Unix this is harmless but conceptually correct).
+    const current = writers.get(filePath);
+    if (current && !current.destroyed) {
+      try { current.end(); } catch { /* best effort */ }
+    }
+    writers.delete(filePath);
+
+    // Drop the oldest backup if it exists.
+    const oldest = `${filePath}.${LOG_BACKUPS}`;
+    if (existsSync(oldest)) {
+      try { unlinkSync(oldest); } catch (err: any) {
+        process.stderr.write(`[log-writer] failed to delete oldest backup ${oldest}: ${err?.message ?? err}\n`);
+      }
+    }
+
+    // Shift backups N-1 → N, N-2 → N-1, ..., 1 → 2.
+    for (let i = LOG_BACKUPS - 1; i >= 1; i--) {
+      const src = `${filePath}.${i}`;
+      const dst = `${filePath}.${i + 1}`;
+      if (existsSync(src)) {
+        try { renameSync(src, dst); } catch (err: any) {
+          process.stderr.write(`[log-writer] failed to rotate ${src} → ${dst}: ${err?.message ?? err}\n`);
+        }
+      }
+    }
+
+    // Current → .1 (only if it exists; might not on first rotation
+    // after a fresh start where bytesWritten counter caught up).
+    if (existsSync(filePath)) {
+      try { renameSync(filePath, `${filePath}.1`); } catch (err: any) {
+        process.stderr.write(`[log-writer] failed to rotate ${filePath} → ${filePath}.1: ${err?.message ?? err}\n`);
+      }
+    }
+
+    // Reset counter; new stream opens lazily on next write.
+    bytesWritten.set(filePath, 0);
+  } finally {
+    rotating.delete(filePath);
+  }
+}
+
 export function getAsyncFileLogger(filePath: string): AsyncFileLogger {
   return {
     write(line: string): void {
+      // Bootstrap counter from disk BEFORE the rotation check — a
+      // pre-existing log file's size must be considered when deciding
+      // whether THIS write triggers rotation.
+      ensureBytesCounterBootstrapped(filePath);
+      const lineSize = Buffer.byteLength(line, "utf8");
+      if ((bytesWritten.get(filePath) ?? 0) + lineSize > LOG_MAX_SIZE_BYTES) {
+        rotateFile(filePath);
+      }
       const stream = getStream(filePath);
       try {
         stream.write(line);
+        bytesWritten.set(filePath, (bytesWritten.get(filePath) ?? 0) + lineSize);
       } catch (err: any) {
         // Defensive: if the stream is somehow in a bad state, fall back
         // to stderr without crashing.
@@ -69,6 +185,7 @@ export function getAsyncFileLogger(filePath: string): AsyncFileLogger {
         const stream = writers.get(filePath);
         if (!stream || stream.destroyed) { resolve(); return; }
         writers.delete(filePath);
+        bytesWritten.delete(filePath);
         stream.end(() => resolve());
       });
     },
@@ -79,10 +196,20 @@ export function getAsyncFileLogger(filePath: string): AsyncFileLogger {
 export async function closeAllAsyncFileLoggers(): Promise<void> {
   const all = [...writers.entries()];
   writers.clear();
+  bytesWritten.clear();
   await Promise.all(all.map(([_path, stream]) =>
     new Promise<void>((resolve) => {
       if (stream.destroyed) { resolve(); return; }
       stream.end(() => resolve());
     }),
   ));
+}
+
+/** Exposed for tests — pure function inspecting current state. */
+export function _testingState() {
+  return {
+    bytesWritten: new Map(bytesWritten),
+    LOG_MAX_SIZE_BYTES,
+    LOG_BACKUPS,
+  };
 }

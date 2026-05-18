@@ -2,9 +2,29 @@
 // @bun
 
 // src/log-writer.ts
-import { createWriteStream, mkdirSync, existsSync } from "fs";
+import {
+  createWriteStream,
+  mkdirSync,
+  existsSync,
+  statSync,
+  renameSync,
+  unlinkSync
+} from "fs";
 import { dirname } from "path";
+var LOG_MAX_SIZE_BYTES = parseInt(process.env.AGENTBRIDGE_LOG_MAX_SIZE_BYTES ?? String(50 * 1024 * 1024), 10);
+var LOG_BACKUPS = parseInt(process.env.AGENTBRIDGE_LOG_BACKUPS ?? "5", 10);
 var writers = new Map;
+var bytesWritten = new Map;
+var rotating = new Set;
+function ensureBytesCounterBootstrapped(filePath) {
+  if (bytesWritten.has(filePath))
+    return;
+  let initialSize = 0;
+  try {
+    initialSize = statSync(filePath).size;
+  } catch {}
+  bytesWritten.set(filePath, initialSize);
+}
 function getStream(filePath) {
   const existing = writers.get(filePath);
   if (existing && !existing.destroyed)
@@ -23,12 +43,64 @@ function getStream(filePath) {
   writers.set(filePath, stream);
   return stream;
 }
+function rotateFile(filePath) {
+  if (rotating.has(filePath))
+    return;
+  rotating.add(filePath);
+  try {
+    const current = writers.get(filePath);
+    if (current && !current.destroyed) {
+      try {
+        current.end();
+      } catch {}
+    }
+    writers.delete(filePath);
+    const oldest = `${filePath}.${LOG_BACKUPS}`;
+    if (existsSync(oldest)) {
+      try {
+        unlinkSync(oldest);
+      } catch (err) {
+        process.stderr.write(`[log-writer] failed to delete oldest backup ${oldest}: ${err?.message ?? err}
+`);
+      }
+    }
+    for (let i = LOG_BACKUPS - 1;i >= 1; i--) {
+      const src = `${filePath}.${i}`;
+      const dst = `${filePath}.${i + 1}`;
+      if (existsSync(src)) {
+        try {
+          renameSync(src, dst);
+        } catch (err) {
+          process.stderr.write(`[log-writer] failed to rotate ${src} \u2192 ${dst}: ${err?.message ?? err}
+`);
+        }
+      }
+    }
+    if (existsSync(filePath)) {
+      try {
+        renameSync(filePath, `${filePath}.1`);
+      } catch (err) {
+        process.stderr.write(`[log-writer] failed to rotate ${filePath} \u2192 ${filePath}.1: ${err?.message ?? err}
+`);
+      }
+    }
+    bytesWritten.set(filePath, 0);
+  } finally {
+    rotating.delete(filePath);
+  }
+}
 function getAsyncFileLogger(filePath) {
   return {
     write(line) {
+      ensureBytesCounterBootstrapped(filePath);
+      const lineSize = Buffer.byteLength(line, "utf8");
+      if ((bytesWritten.get(filePath) ?? 0) + lineSize > LOG_MAX_SIZE_BYTES) {
+        rotateFile(filePath);
+      }
       const stream = getStream(filePath);
       try {
         stream.write(line);
+        bytesWritten.set(filePath, (bytesWritten.get(filePath) ?? 0) + lineSize);
       } catch (err) {
         process.stderr.write(`[log-writer] sync write failed on ${filePath}: ${err?.message ?? err}
 `);
@@ -42,6 +114,7 @@ function getAsyncFileLogger(filePath) {
           return;
         }
         writers.delete(filePath);
+        bytesWritten.delete(filePath);
         stream.end(() => resolve());
       });
     }
@@ -50,6 +123,7 @@ function getAsyncFileLogger(filePath) {
 async function closeAllAsyncFileLoggers() {
   const all = [...writers.entries()];
   writers.clear();
+  bytesWritten.clear();
   await Promise.all(all.map(([_path, stream]) => new Promise((resolve) => {
     if (stream.destroyed) {
       resolve();
@@ -2020,7 +2094,7 @@ class TuiConnectionState {
 
 // src/daemon-lifecycle.ts
 import { spawn as spawn2, execFileSync } from "child_process";
-import { existsSync as existsSync3, readFileSync, unlinkSync, writeFileSync, openSync, closeSync, constants } from "fs";
+import { existsSync as existsSync3, readFileSync, unlinkSync as unlinkSync2, writeFileSync, openSync, closeSync, constants } from "fs";
 import { fileURLToPath } from "url";
 var DAEMON_ENTRY = process.env.AGENTBRIDGE_DAEMON_ENTRY ?? "./daemon.ts";
 var DAEMON_PATH = fileURLToPath(new URL(DAEMON_ENTRY, import.meta.url));
@@ -2139,12 +2213,12 @@ class DaemonLifecycle {
   }
   removePidFile() {
     try {
-      unlinkSync(this.stateDir.pidFile);
+      unlinkSync2(this.stateDir.pidFile);
     } catch {}
   }
   removeStatusFile() {
     try {
-      unlinkSync(this.stateDir.statusFile);
+      unlinkSync2(this.stateDir.statusFile);
     } catch {}
   }
   markKilled() {
@@ -2154,7 +2228,7 @@ class DaemonLifecycle {
   }
   clearKilled() {
     try {
-      unlinkSync(this.stateDir.killedFile);
+      unlinkSync2(this.stateDir.killedFile);
     } catch {}
   }
   wasKilled() {
@@ -2233,7 +2307,7 @@ class DaemonLifecycle {
   }
   releaseLock() {
     try {
-      unlinkSync(this.stateDir.lockFile);
+      unlinkSync2(this.stateDir.lockFile);
     } catch {}
   }
   async kill(gracefulTimeoutMs = 3000) {
@@ -2395,7 +2469,7 @@ class ConfigService {
 }
 
 // src/pair-registry.ts
-import { readFileSync as readFileSync3, writeFileSync as writeFileSync3, renameSync, mkdirSync as mkdirSync4, existsSync as existsSync5, unlinkSync as unlinkSync2 } from "fs";
+import { readFileSync as readFileSync3, writeFileSync as writeFileSync3, renameSync as renameSync2, mkdirSync as mkdirSync4, existsSync as existsSync5, unlinkSync as unlinkSync3 } from "fs";
 import { dirname as dirname2 } from "path";
 import { randomBytes } from "crypto";
 var DEFAULT_PAIR_PORTS = { appPort: 4500, proxyPort: 4501 };
@@ -2475,11 +2549,11 @@ class PairRegistry {
     };
     try {
       writeFileSync3(tmp, JSON.stringify(snapshot, null, 2), "utf8");
-      renameSync(tmp, this.filePath);
+      renameSync2(tmp, this.filePath);
     } catch (err) {
       try {
         if (existsSync5(tmp))
-          unlinkSync2(tmp);
+          unlinkSync3(tmp);
       } catch {}
       throw new Error(`[pair-registry] save failed: ${err?.message ?? err}`);
     }
