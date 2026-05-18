@@ -172,3 +172,23 @@ pattern. Specifically:
 - `startManagedDaemon()` spawn + `await waitForHealth()` synchronization
 - Cleanup hook that walks every pair's codex.pid and kills the lot
 - Per-probe state dir under `/tmp/agentbridge-multi-pair-probe-<name>`
+
+## Audit probes (expected-fail until refactor lands)
+
+`audit-d*-*.ts` probes correspond to leaks documented in
+`docs/multi-pair-globals-audit.md`. They are written to FAIL on current
+code — passing means the corresponding refactor decision landed.
+
+| Probe | Audit ID | Failure demonstrates |
+|---|---|---|
+| `audit-d1-top-level-status-stale.ts` | D1 | `currentStatus()` top-level fields (`tuiConnected`, `proxyTuiConnected`, `threadId`) reflect default pair only, ignoring active non-default pairs |
+| `audit-d3-shutdown-pair-leak.ts` | D3 | `shutdown()` SIGTERM handler stops only default pair's codex, orphaning other pairs' children |
+
+Audit probes are SAFE to run repeatedly — they include defensive
+cleanup so they don't leak orphan codex processes onto subsequent
+runs, even when their assertions fail.
+
+Audit-D2 (isolated bootstrap target) is documented in the audit doc
+but no probe yet — exercising it requires more nuanced setup (chat
+that's homed on non-default but falls through to isolated bootstrap),
+deferred to the refactor PR.
