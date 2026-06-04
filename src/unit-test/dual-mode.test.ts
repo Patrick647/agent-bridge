@@ -5,6 +5,8 @@ import { ClaudeAdapter } from "../claude-adapter";
 function createAdapter(envMode?: string): any {
   const origMode = process.env.AGENTBRIDGE_MODE;
   const origMax = process.env.AGENTBRIDGE_MAX_BUFFERED_MESSAGES;
+  const origPullHint = process.env.AGENTBRIDGE_PULL_HINT;
+  const origPullHintCooldown = process.env.AGENTBRIDGE_PULL_HINT_COOLDOWN_MS;
 
   if (envMode !== undefined) {
     process.env.AGENTBRIDGE_MODE = envMode;
@@ -24,6 +26,16 @@ function createAdapter(envMode?: string): any {
     process.env.AGENTBRIDGE_MAX_BUFFERED_MESSAGES = origMax;
   } else {
     delete process.env.AGENTBRIDGE_MAX_BUFFERED_MESSAGES;
+  }
+  if (origPullHint !== undefined) {
+    process.env.AGENTBRIDGE_PULL_HINT = origPullHint;
+  } else {
+    delete process.env.AGENTBRIDGE_PULL_HINT;
+  }
+  if (origPullHintCooldown !== undefined) {
+    process.env.AGENTBRIDGE_PULL_HINT_COOLDOWN_MS = origPullHintCooldown;
+  } else {
+    delete process.env.AGENTBRIDGE_PULL_HINT_COOLDOWN_MS;
   }
 
   return adapter;
@@ -59,11 +71,11 @@ describe("Dual-mode transport: mode resolution", () => {
     expect(adapter.configuredMode).toBe("auto");
   });
 
-  test("auto mode defaults to push", () => {
+  test("auto mode defaults to pull", () => {
     const adapter = createAdapter();
     adapter.resolveMode();
-    expect(adapter.resolvedMode).toBe("push");
-    expect(adapter.getDeliveryMode()).toBe("push");
+    expect(adapter.resolvedMode).toBe("pull");
+    expect(adapter.getDeliveryMode()).toBe("pull");
   });
 
   test("resolveMode sets 'push' when configuredMode is 'push'", () => {
@@ -119,6 +131,65 @@ describe("Dual-mode transport: pull mode message queue", () => {
     await adapter.pushNotification(makeBridgeMessage("pull msg"));
     expect(adapter.pendingMessages).toHaveLength(1);
     expect(adapter.pendingMessages[0].content).toBe("pull msg");
+  });
+
+  test("pushNotification emits a static pull hint without Codex content", async () => {
+    const adapter = createAdapter("pull");
+    adapter.resolveMode();
+
+    const notifications: any[] = [];
+    adapter.server = {
+      notification: async (payload: any) => {
+        notifications.push(payload);
+      },
+    };
+
+    await adapter.pushNotification(makeBridgeMessage("sensitive codex payload"));
+
+    expect(adapter.pendingMessages).toHaveLength(1);
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].method).toBe("notifications/claude/channel");
+    expect(notifications[0].params.content).toContain("pending Codex message");
+    expect(notifications[0].params.content).toContain("get_messages");
+    expect(notifications[0].params.content).not.toContain("sensitive codex payload");
+    expect(notifications[0].params.meta.source_type).toBe("agentbridge_pull_hint");
+  });
+
+  test("pull hint respects cooldown", async () => {
+    process.env.AGENTBRIDGE_PULL_HINT_COOLDOWN_MS = "60000";
+    const adapter = createAdapter("pull");
+    adapter.resolveMode();
+
+    const notifications: any[] = [];
+    adapter.server = {
+      notification: async (payload: any) => {
+        notifications.push(payload);
+      },
+    };
+
+    await adapter.pushNotification(makeBridgeMessage("first"));
+    await adapter.pushNotification(makeBridgeMessage("second"));
+
+    expect(adapter.pendingMessages).toHaveLength(2);
+    expect(notifications).toHaveLength(1);
+  });
+
+  test("pull hint can be disabled with AGENTBRIDGE_PULL_HINT=0", async () => {
+    process.env.AGENTBRIDGE_PULL_HINT = "0";
+    const adapter = createAdapter("pull");
+    adapter.resolveMode();
+
+    const notifications: any[] = [];
+    adapter.server = {
+      notification: async (payload: any) => {
+        notifications.push(payload);
+      },
+    };
+
+    await adapter.pushNotification(makeBridgeMessage("pull msg"));
+
+    expect(adapter.pendingMessages).toHaveLength(1);
+    expect(notifications).toHaveLength(0);
   });
 
   test("push mode message ids include a session-unique prefix", async () => {

@@ -13714,6 +13714,21 @@ class StateDirResolver {
   get killedFile() {
     return join(this.stateDir, "killed");
   }
+  pairDir(pairId) {
+    return join(this.stateDir, "pairs", pairId);
+  }
+  pairCodexPidFile(pairId) {
+    return join(this.pairDir(pairId), "codex.pid");
+  }
+  pairCodexWrapperLogFile(pairId) {
+    return join(this.pairDir(pairId), "codex-wrapper.log");
+  }
+  ensurePairDir(pairId) {
+    const dir = this.pairDir(pairId);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+  }
 }
 
 // src/claude-adapter.ts
@@ -13742,6 +13757,7 @@ var CLAUDE_INSTRUCTIONS = [
   "## How to interact",
   "- Use the reply tool to send messages back to Codex \u2014 pass chat_id back.",
   "- Use the get_messages tool to check for pending messages from Codex.",
+  "- If you receive an AgentBridge poll hint, immediately call get_messages.",
   "- After sending a reply, call get_messages to check for responses.",
   "- When the user asks about Codex status or progress, call get_messages.",
   "",
@@ -13758,6 +13774,7 @@ class ClaudeAdapter extends EventEmitter {
   sessionId;
   notificationIdPrefix;
   instanceId;
+  chatId;
   replySender = null;
   logFile;
   configuredMode;
@@ -13765,16 +13782,23 @@ class ClaudeAdapter extends EventEmitter {
   pendingMessages = [];
   maxBufferedMessages;
   droppedMessageCount = 0;
+  pullHintSeq = 0;
+  lastPullHintTs = 0;
+  pullHintEnabled;
+  pullHintCooldownMs;
   constructor(logFile = new StateDirResolver().logFile) {
     super();
     this.logFile = logFile;
     this.instanceId = randomUUID().slice(0, 8);
-    this.sessionId = `codex_${Date.now()}`;
+    this.sessionId = `codex_${Date.now()}_${this.instanceId}`;
+    this.chatId = this.sessionId;
     this.notificationIdPrefix = randomUUID().replace(/-/g, "").slice(0, 12);
     this.log(`ClaudeAdapter created (instance=${this.instanceId})`);
     const envMode = process.env.AGENTBRIDGE_MODE;
     this.configuredMode = envMode && ["push", "pull", "auto"].includes(envMode) ? envMode : "auto";
     this.maxBufferedMessages = parseInt(process.env.AGENTBRIDGE_MAX_BUFFERED_MESSAGES ?? "100", 10);
+    this.pullHintEnabled = !["0", "false", "off", "no"].includes((process.env.AGENTBRIDGE_PULL_HINT ?? "1").toLowerCase());
+    this.pullHintCooldownMs = parseInt(process.env.AGENTBRIDGE_PULL_HINT_COOLDOWN_MS ?? "5000", 10);
     this.server = new Server({ name: "agentbridge", version: "0.1.0" }, {
       capabilities: {
         experimental: { "claude/channel": {} },
@@ -13807,8 +13831,8 @@ class ClaudeAdapter extends EventEmitter {
       this.resolvedMode = this.configuredMode;
       this.log(`Delivery mode set by AGENTBRIDGE_MODE: ${this.resolvedMode}`);
     } else {
-      this.resolvedMode = "push";
-      this.log("Delivery mode defaulting to push (set AGENTBRIDGE_MODE=pull to use polling instead)");
+      this.resolvedMode = "pull";
+      this.log("Delivery mode defaulting to pull (set AGENTBRIDGE_MODE=push to opt into channel notifications)");
     }
   }
   async pushNotification(message) {
@@ -13817,6 +13841,7 @@ class ClaudeAdapter extends EventEmitter {
       await this.pushViaChannel(message);
     } else {
       this.queueForPull(message);
+      await this.pushPullHint();
     }
   }
   async pushViaChannel(message) {
@@ -13851,6 +13876,38 @@ class ClaudeAdapter extends EventEmitter {
     }
     this.pendingMessages.push(message);
     this.log(`Queued message for pull (${this.pendingMessages.length} pending, instance=${this.instanceId})`);
+  }
+  async pushPullHint() {
+    if (!this.pullHintEnabled || this.resolvedMode !== "pull")
+      return;
+    const now = Date.now();
+    if (Number.isFinite(this.pullHintCooldownMs) && now - this.lastPullHintTs < this.pullHintCooldownMs) {
+      this.log(`Suppressing pull hint (cooldown, pending=${this.pendingMessages.length})`);
+      return;
+    }
+    this.lastPullHintTs = now;
+    const pending = this.pendingMessages.length;
+    const msgId = `codex_pull_hint_${this.notificationIdPrefix}_${++this.pullHintSeq}`;
+    const messageWord = pending === 1 ? "message" : "messages";
+    try {
+      await this.server.notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: `AgentBridge has ${pending} pending Codex ${messageWord}. ` + "Use the agentbridge get_messages tool now to read them.",
+          meta: {
+            chat_id: this.sessionId,
+            message_id: msgId,
+            user: "AgentBridge",
+            user_id: "agentbridge",
+            ts: new Date(now).toISOString(),
+            source_type: "agentbridge_pull_hint"
+          }
+        }
+      });
+      this.log(`Pushed pull hint: ${msgId} (${pending} pending)`);
+    } catch (e) {
+      this.log(`Pull hint notification failed: ${e.message}`);
+    }
   }
   drainMessages() {
     this.log(`get_messages called (instance=${this.instanceId}, pending=${this.pendingMessages.length}, dropped=${this.droppedMessageCount})`);
@@ -14004,9 +14061,20 @@ class DaemonClient extends EventEmitter2 {
   wsId = 0;
   nextRequestId = 1;
   pendingReplies = new Map;
-  constructor(url) {
+  pendingAttachReplies = new Map;
+  chatId;
+  pairId;
+  constructor(url, opts) {
     super();
     this.url = url;
+    this.chatId = opts?.chatId;
+    this.pairId = opts?.pairId;
+  }
+  setChatId(chatId) {
+    this.chatId = chatId;
+  }
+  setPairId(pairId) {
+    this.pairId = pairId;
   }
   async connect() {
     if (this.ws?.readyState === WebSocket.OPEN) {
@@ -14047,14 +14115,27 @@ class DaemonClient extends EventEmitter2 {
       };
     });
   }
-  attachClaude() {
-    this.send({ type: "claude_connect" });
+  async attachClaude(timeoutMs = 5000) {
+    const requestId = `attach_${Date.now()}_${this.nextRequestId++}`;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingAttachReplies.delete(requestId);
+        resolve({ ok: true, homePairId: null, paired: false });
+      }, timeoutMs);
+      this.pendingAttachReplies.set(requestId, { resolve, timer });
+      this.send({
+        type: "claude_connect",
+        requestId,
+        chatId: this.chatId,
+        pairId: this.pairId
+      });
+    });
   }
   async disconnect() {
     if (!this.ws)
       return;
     try {
-      this.send({ type: "claude_disconnect" });
+      this.send({ type: "claude_disconnect", chatId: this.chatId });
     } catch {}
     try {
       this.ws.close();
@@ -14076,6 +14157,7 @@ class DaemonClient extends EventEmitter2 {
       this.send({
         type: "claude_to_codex",
         requestId,
+        chatId: this.chatId,
         message,
         ...requireReply ? { requireReply: true } : {}
       });
@@ -14101,6 +14183,29 @@ class DaemonClient extends EventEmitter2 {
           clearTimeout(pending.timer);
           this.pendingReplies.delete(message.requestId);
           pending.resolve({ success: message.success, error: message.error });
+          return;
+        }
+        case "claude_connect_result": {
+          if (!message.requestId)
+            return;
+          const pending = this.pendingAttachReplies.get(message.requestId);
+          if (!pending)
+            return;
+          clearTimeout(pending.timer);
+          this.pendingAttachReplies.delete(message.requestId);
+          if (message.ok) {
+            pending.resolve({
+              ok: true,
+              homePairId: message.homePairId,
+              paired: message.paired
+            });
+          } else {
+            pending.resolve({
+              ok: false,
+              error: message.error,
+              message: message.message
+            });
+          }
           return;
         }
         case "status":
@@ -14129,6 +14234,15 @@ class DaemonClient extends EventEmitter2 {
       pending.resolve({ success: false, error: error2 });
       this.pendingReplies.delete(requestId);
     }
+    for (const [requestId, pending] of this.pendingAttachReplies.entries()) {
+      clearTimeout(pending.timer);
+      pending.resolve({
+        ok: false,
+        error: "DAEMON_SHUTTING_DOWN",
+        message: `claude_connect interrupted: ${error2}`
+      });
+      this.pendingAttachReplies.delete(requestId);
+    }
   }
   send(message) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
@@ -14146,8 +14260,24 @@ class DaemonClient extends EventEmitter2 {
 import { spawn, execFileSync } from "child_process";
 import { existsSync as existsSync2, readFileSync, unlinkSync, writeFileSync, openSync, closeSync, constants } from "fs";
 import { fileURLToPath } from "url";
-var DAEMON_ENTRY = process.env.AGENTBRIDGE_DAEMON_ENTRY ?? "./daemon.ts";
-var DAEMON_PATH = fileURLToPath(new URL(DAEMON_ENTRY, import.meta.url));
+var DEFAULT_DAEMON_ENTRIES = [
+  "./daemon.ts",
+  "../plugins/agentbridge/server/daemon.js",
+  "./daemon.js"
+];
+function resolveDaemonPath(entry, baseUrl = import.meta.url) {
+  if (entry) {
+    return fileURLToPath(new URL(entry, baseUrl));
+  }
+  for (const candidate of DEFAULT_DAEMON_ENTRIES) {
+    const candidatePath = fileURLToPath(new URL(candidate, baseUrl));
+    if (existsSync2(candidatePath)) {
+      return candidatePath;
+    }
+  }
+  return fileURLToPath(new URL(DEFAULT_DAEMON_ENTRIES[0], baseUrl));
+}
+var DAEMON_PATH = resolveDaemonPath(process.env.AGENTBRIDGE_DAEMON_ENTRY);
 
 class DaemonLifecycle {
   stateDir;
@@ -14194,8 +14324,8 @@ class DaemonLifecycle {
       return;
     }
     try {
-      this.launch();
-      await this.waitForReady();
+      const daemonProc = this.launch();
+      await this.awaitReadyOrFailure(daemonProc);
     } finally {
       this.releaseLock();
     }
@@ -14297,7 +14427,27 @@ class DaemonLifecycle {
       detached: true,
       stdio: "ignore"
     });
+    daemonProc.on("error", () => {});
     daemonProc.unref();
+    return daemonProc;
+  }
+  async awaitReadyOrFailure(daemonProc) {
+    const exitPromise = new Promise((resolve) => {
+      daemonProc.once("exit", (code, signal) => {
+        resolve({ kind: "exit", code, signal });
+      });
+      daemonProc.once("error", (err) => {
+        resolve({ kind: "spawn-error", err });
+      });
+    });
+    const readyPromise = this.waitForReady().then(() => ({ kind: "ready" }));
+    const result = await Promise.race([readyPromise, exitPromise]);
+    if (result.kind === "ready")
+      return;
+    if (result.kind === "spawn-error") {
+      throw new Error(`Daemon spawn failed: ${result.err.message}. ` + `Check that bun (${process.execPath}) is executable and that the ` + `daemon bundle exists at ${DAEMON_PATH}.`);
+    }
+    throw new Error(`Daemon exited before becoming ready ` + `(code=${result.code ?? "null"}, signal=${result.signal ?? "null"}). ` + `Check ${this.stateDir.logFile} for the daemon's last log lines. ` + `Common causes: control port ${this.controlPort} is already in use by another process, ` + `stale state in ${this.stateDir.dir}, ` + `or 'codex' CLI missing from PATH.`);
   }
   removeStalePidFile() {
     this.log("Removing stale pid file");
@@ -14505,6 +14655,10 @@ function disabledReplyError(reason) {
       return "AgentBridge rejected this session \u2014 another Claude Code session is already connected. Close the other session first, or run `agentbridge kill` to reset.";
     case "killed":
       return "AgentBridge is disabled by `agentbridge kill`. Restart Claude Code (`agentbridge claude`), switch to a new conversation, or run `/resume` to reconnect.";
+    case "daemon_rejected_attach":
+      return "AgentBridge could not attach this Claude session \u2014 the daemon rejected the pair binding. See the most recent system message for the specific error (PAIR_NOT_FOUND / PAIR_BUSY / INVALID_PAIR_NAME). Restart Claude Code after fixing the underlying issue.";
+    case "daemon_missing":
+      return "AgentBridge daemon is not running. Start Codex with `abg codex --via-proxy`, then call `get_messages` again after the bridge reconnects.";
   }
 }
 
@@ -14517,7 +14671,8 @@ var CONTROL_PORT = parseInt(process.env.AGENTBRIDGE_CONTROL_PORT ?? "4502", 10);
 var daemonLifecycle = new DaemonLifecycle({ stateDir, controlPort: CONTROL_PORT, log });
 var CONTROL_WS_URL = daemonLifecycle.controlWsUrl;
 var claude = new ClaudeAdapter(stateDir.logFile);
-var daemonClient = new DaemonClient(CONTROL_WS_URL);
+var PAIR_ID = process.env.AGENTBRIDGE_PAIR;
+var daemonClient = new DaemonClient(CONTROL_WS_URL, { chatId: claude.chatId, pairId: PAIR_ID });
 var shuttingDown = false;
 var daemonDisabled = false;
 var daemonDisabledReason = null;
@@ -14583,9 +14738,9 @@ daemonClient.on("rejected", async () => {
   await daemonClient.disconnect();
 });
 claude.on("ready", async () => {
-  log(`MCP server ready (delivery mode: ${claude.getDeliveryMode()}) \u2014 ensuring AgentBridge daemon...`);
+  log(`MCP server ready (delivery mode: ${claude.getDeliveryMode()}) \u2014 connecting to AgentBridge daemon...`);
   if (daemonLifecycle.wasKilled()) {
-    await enterDisabledState("Killed sentinel found \u2014 bridge staying idle", "\u26D4 AgentBridge was stopped by `agentbridge kill`. Bridge is staying idle. Restart Claude Code (`agentbridge claude`), switch to a new conversation, or run `/resume` to reconnect.");
+    await enterDisabledState("killed", "Killed sentinel found \u2014 bridge staying idle", "\u26D4 AgentBridge was stopped by `agentbridge kill`. Bridge is staying idle. Restart Claude Code (`agentbridge claude`), switch to a new conversation, or run `/resume` to reconnect.");
     return;
   }
   await connectToDaemon();
@@ -14593,27 +14748,41 @@ claude.on("ready", async () => {
 async function connectToDaemon(isReconnect = false) {
   if (daemonDisabled) {
     log("connectToDaemon() skipped \u2014 bridge is disabled");
-    return;
+    return false;
   }
   try {
-    await daemonLifecycle.ensureRunning();
+    const healthy = await daemonLifecycle.isHealthy();
+    if (!healthy) {
+      await enterDisabledState("daemon_missing", "AgentBridge daemon is not running \u2014 waiting for Codex-side startup", "\u23F3 AgentBridge daemon is not running. Start Codex in another terminal with: `abg codex --via-proxy`. This Claude plugin will reconnect automatically after the daemon is healthy.");
+      return false;
+    }
     await daemonClient.connect();
-    daemonClient.attachClaude();
+    const attachResult = await daemonClient.attachClaude();
+    if (!attachResult.ok) {
+      const pairCtx = PAIR_ID ? ` (requested pair: "${PAIR_ID}")` : "";
+      log(`Daemon rejected claude_connect: ${attachResult.error} \u2014 ${attachResult.message}${pairCtx}`);
+      daemonDisabled = true;
+      daemonDisabledReason = "daemon_rejected_attach";
+      await claude.pushNotification(systemMessage("system_bridge_disabled", `\u274C AgentBridge could not attach this Claude session: ${attachResult.error}. ${attachResult.message}${pairCtx}`));
+      return false;
+    }
     daemonDisabledReason = null;
     if (!isReconnect) {
-      claude.pushNotification(systemMessage("system_bridge_ready", "\u2705 AgentBridge bridge is ready. Daemon connected. Start Codex in another terminal with: agentbridge codex"));
+      const pairCtx = attachResult.paired && attachResult.homePairId ? ` (paired with pair "${attachResult.homePairId}")` : attachResult.homePairId && attachResult.homePairId !== "default" ? ` (home pair: "${attachResult.homePairId}")` : "";
+      claude.pushNotification(systemMessage("system_bridge_ready", `\u2705 AgentBridge bridge is ready. Daemon connected${pairCtx}. Start Codex in another terminal with: abg codex --via-proxy`));
     }
+    return true;
   } catch (err) {
     log(`Failed to connect to daemon: ${err.message}`);
     await claude.pushNotification(systemMessage("system_daemon_connect_failed", `\u274C AgentBridge daemon failed to start or is unreachable: ${err.message}`));
-    throw err;
+    return false;
   }
 }
-async function enterDisabledState(logMessage, notificationContent) {
+async function enterDisabledState(reason, logMessage, notificationContent) {
   if (daemonDisabled)
     return;
   daemonDisabled = true;
-  daemonDisabledReason = "killed";
+  daemonDisabledReason = reason;
   log(logMessage);
   await claude.pushNotification(systemMessage("system_bridge_disabled", notificationContent));
   await daemonClient.disconnect();
@@ -14624,7 +14793,7 @@ var reconnectTask = null;
 async function notifyIfDaemonKilled(logMessage) {
   if (!daemonLifecycle.wasKilled())
     return false;
-  await enterDisabledState(logMessage, "\u26D4 AgentBridge was stopped by `agentbridge kill`. Bridge is staying idle. Restart Claude Code (`agentbridge claude`), switch to a new conversation, or run `/resume` to reconnect.");
+  await enterDisabledState("killed", logMessage, "\u26D4 AgentBridge was stopped by `agentbridge kill`. Bridge is staying idle. Restart Claude Code (`agentbridge claude`), switch to a new conversation, or run `/resume` to reconnect.");
   return true;
 }
 function reconnectToDaemon() {
@@ -14651,7 +14820,9 @@ function reconnectToDaemon() {
           return;
         }
         try {
-          await connectToDaemon(true);
+          const connected = await connectToDaemon(true);
+          if (!connected)
+            return;
           log("Reconnected to AgentBridge daemon successfully");
           const now = Date.now();
           if (now - lastReconnectNotifyTs >= RECONNECT_NOTIFY_COOLDOWN_MS) {
@@ -14700,7 +14871,16 @@ async function pollDisabledRecovery() {
     log("Disabled-state recovery conditions met \u2014 attempting direct daemon reconnect");
     try {
       await daemonClient.connect();
-      daemonClient.attachClaude();
+      const attachResult = await daemonClient.attachClaude();
+      if (!attachResult.ok) {
+        const pairCtx = PAIR_ID ? ` (requested pair: "${PAIR_ID}")` : "";
+        log(`Recovery attach rejected: ${attachResult.error} \u2014 ${attachResult.message}${pairCtx}`);
+        daemonDisabled = true;
+        daemonDisabledReason = "daemon_rejected_attach";
+        stopDisabledRecoveryPoller();
+        await claude.pushNotification(systemMessage("system_bridge_disabled", `\u274C AgentBridge recovery failed: ${attachResult.error}. ${attachResult.message}${pairCtx}`));
+        return;
+      }
       daemonDisabled = false;
       daemonDisabledReason = null;
       stopDisabledRecoveryPoller();

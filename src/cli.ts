@@ -6,7 +6,7 @@
  * Commands:
  *   agentbridge init        — Install plugin, check deps, generate project config
  *   agentbridge dev         — Register local marketplace + install plugin for local dev
- *   agentbridge claude      — Start Claude Code with push channel flags
+ *   agentbridge claude      — Start Claude Code with AgentBridge plugin flags
  *   agentbridge codex       — Start Codex TUI connected to daemon
  *   agentbridge kill        — Force kill all AgentBridge processes
  */
@@ -23,7 +23,7 @@ async function main() {
   switch (command) {
     case "init":
       const { runInit } = await import("./cli/init");
-      await runInit();
+      await runInit(restArgs);
       break;
     case "dev":
       const { runDev } = await import("./cli/dev");
@@ -40,6 +40,22 @@ async function main() {
     case "kill":
       const { runKill } = await import("./cli/kill");
       await runKill();
+      break;
+    case "pairs":
+      // STM v2.3 §8.2 P4c — pair management subcommands.
+      const { runPairs } = await import("./cli/pairs");
+      await runPairs(restArgs);
+      break;
+    case "status":
+      // 2026-05-18: human-readable /healthz dump (alternative to
+      // `curl :4502/healthz | python -m json.tool`).
+      const { runStatus } = await import("./cli/status");
+      await runStatus(restArgs);
+      break;
+    case "task":
+      // 2026-05-18: minimal review state machine. See `src/task-journal.ts`.
+      const { runTask } = await import("./cli/task");
+      await runTask(restArgs);
       break;
     case "--help":
     case "-h":
@@ -68,8 +84,15 @@ Usage:
 Commands:
   init              Install plugin, check dependencies, generate project config
   dev               Register local marketplace + install plugin (for local dev)
-  claude [args...]  Start Claude Code with push channel enabled
+  claude [args...]  Start Claude Code with AgentBridge enabled
+                    Use --pair NAME to pre-bind to a specific pair (STM v2.3)
   codex [args...]   Start Codex TUI connected to AgentBridge daemon
+                    Use --pair NAME to target a specific pair (STM v2.3)
+  pairs <subcmd>    Manage shared-thread pairs (STM v2.3)
+                    Subcommands: ls / rm NAME [--forget] [--force] / claim CHAT_ID
+  status [--json]   Human-readable daemon health + per-pair snapshot
+  task <subcmd>     Review state machine: start / assign / submit / verdict /
+                    abandon / status / journal / list
   kill              Force kill all AgentBridge processes
 
 Options:
@@ -77,12 +100,18 @@ Options:
   --version, -v     Show version
 
 Examples:
-  abg init                     # First-time setup
-  abg claude                   # Start Claude Code
-  abg claude --resume          # Start Claude Code and resume session
-  abg codex                    # Start Codex TUI
-  abg codex --model o3         # Start Codex with specific model
-  abg kill                     # Emergency: kill all processes
+  abg init                                 # First-time setup (default collab content)
+  abg init --workflow codex-implements     # Init with Codex-implements / Claude-reviews preset
+  abg init --list-workflows                # List all available workflow presets
+  abg claude                               # Start Claude Code
+  abg claude --resume                      # Start Claude Code and resume session
+  abg codex                                # Start Codex TUI (direct mode — bypasses bridge)
+  abg codex --via-proxy                    # Start Codex TUI THROUGH bridge proxy (needed
+                                           #   for multi-agent collaboration)
+  abg codex --model o3                     # Start Codex with specific model
+  abg codex --sandbox workspace-write      # Codex with write access (preset-friendly)
+  abg status                               # Quick daemon + pair status check
+  abg kill                                 # Emergency: kill all processes
 `.trim());
 }
 

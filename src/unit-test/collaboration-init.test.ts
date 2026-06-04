@@ -3,7 +3,12 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { writeCollaborationSections } from "../cli/init";
-import { MARKER_ID } from "../collaboration-content";
+import {
+  MARKER_ID,
+  getWorkflowSections,
+  isValidWorkflowPreset,
+  VALID_WORKFLOW_PRESETS,
+} from "../collaboration-content";
 
 const START = `<!-- ${MARKER_ID}:start -->`;
 const END = `<!-- ${MARKER_ID}:end -->`;
@@ -123,5 +128,124 @@ describe("writeCollaborationSections", () => {
     expect(updated).not.toContain("OLD COLLABORATION CONTENT");
     expect(updated).toContain("Multi-Agent Collaboration");
     expect(updated).toContain("# Project");
+  });
+});
+
+// ── Workflow preset support (2026-05-18) ────────────────────────────
+
+describe("workflow preset registry", () => {
+  test("VALID_WORKFLOW_PRESETS includes default + codex-implements", () => {
+    expect(VALID_WORKFLOW_PRESETS).toContain("default");
+    expect(VALID_WORKFLOW_PRESETS).toContain("codex-implements");
+  });
+
+  test("isValidWorkflowPreset accepts known + rejects unknown", () => {
+    expect(isValidWorkflowPreset("default")).toBe(true);
+    expect(isValidWorkflowPreset("codex-implements")).toBe(true);
+    expect(isValidWorkflowPreset("bogus")).toBe(false);
+    expect(isValidWorkflowPreset("")).toBe(false);
+  });
+
+  test("getWorkflowSections('default') returns the generic content", () => {
+    const sections = getWorkflowSections("default");
+    expect(sections.claudeMd).toContain("Multi-Agent Collaboration");
+    expect(sections.agentsMd).toContain("Multi-Agent Collaboration");
+    // Generic content does NOT name the codex-implements preset.
+    expect(sections.claudeMd).not.toContain("codex-implements preset");
+    expect(sections.agentsMd).not.toContain("codex-implements preset");
+  });
+
+  test("getWorkflowSections('codex-implements') returns the preset content", () => {
+    const sections = getWorkflowSections("codex-implements");
+    // Both files self-identify as the preset.
+    expect(sections.claudeMd).toContain("codex-implements preset");
+    expect(sections.agentsMd).toContain("codex-implements preset");
+    // Claude side documents Claude's roles.
+    expect(sections.claudeMd).toContain("Reviewer / Planner / Git operator");
+    expect(sections.claudeMd).toContain("All git operations");
+    // Agents side documents Codex's roles.
+    expect(sections.agentsMd).toContain("Implementer / Executor / Verifier");
+    expect(sections.agentsMd).toContain("Stop at git boundary");
+  });
+
+  test("codex-implements preset wires the abg task review state machine", () => {
+    // Step 1.5 (2026-05-18): preset must instruct agents on calling
+    // `abg task ...` CLI so the review gate is enforced. Without these
+    // commands in the preset, agents only chat verdicts through bridge
+    // (not enforceable) instead of recording them via journal.
+    const sections = getWorkflowSections("codex-implements");
+
+    // Claude side: start + verdict + journal commands.
+    expect(sections.claudeMd).toContain("abg task start");
+    expect(sections.claudeMd).toContain("abg task verdict");
+    expect(sections.claudeMd).toContain("--as claude");
+    expect(sections.claudeMd).toContain("--must-fix");
+    // Claude side: state machine concept introduced.
+    expect(sections.claudeMd).toMatch(/state machine|review gate|enforced/i);
+
+    // Codex side: submit command + --as codex + iteration loop.
+    expect(sections.agentsMd).toContain("abg task submit");
+    expect(sections.agentsMd).toContain("--as codex");
+    expect(sections.agentsMd).toContain("abg task status");
+    // Codex side: NEED_REVISION + iteration explained.
+    expect(sections.agentsMd).toContain("NEED_REVISION");
+    expect(sections.agentsMd).toMatch(/iterate|iteration N\+1/i);
+  });
+});
+
+describe("writeCollaborationSections with --workflow codex-implements", () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "agentbridge-collab-preset-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test("writes codex-implements preset content when requested", () => {
+    const results = writeCollaborationSections(tempDir, "codex-implements");
+
+    expect(results).toHaveLength(2);
+
+    const claude = readFileSync(join(tempDir, "CLAUDE.md"), "utf-8");
+    const agents = readFileSync(join(tempDir, "AGENTS.md"), "utf-8");
+
+    expect(claude).toContain(START);
+    expect(claude).toContain(END);
+    expect(claude).toContain("codex-implements preset");
+    expect(claude).toContain("Reviewer / Planner / Git operator");
+
+    expect(agents).toContain(START);
+    expect(agents).toContain(END);
+    expect(agents).toContain("codex-implements preset");
+    expect(agents).toContain("Implementer / Executor / Verifier");
+  });
+
+  test("re-running with default preset overwrites codex-implements content", () => {
+    // First write — codex-implements content.
+    writeCollaborationSections(tempDir, "codex-implements");
+    const first = readFileSync(join(tempDir, "CLAUDE.md"), "utf-8");
+    expect(first).toContain("codex-implements preset");
+
+    // Second write — default. Should replace inside the markers.
+    writeCollaborationSections(tempDir, "default");
+    const second = readFileSync(join(tempDir, "CLAUDE.md"), "utf-8");
+    expect(second).not.toContain("codex-implements preset");
+    expect(second).toContain("Multi-Agent Collaboration");
+  });
+
+  test("default preset behavior is preserved when workflow arg omitted", () => {
+    // Backward compat: writeCollaborationSections(dir) with no second
+    // arg must produce the same content as default preset.
+    const sectionsDefault = getWorkflowSections("default");
+    writeCollaborationSections(tempDir);
+    const claude = readFileSync(join(tempDir, "CLAUDE.md"), "utf-8");
+    // Strip the marker frame to compare just the body.
+    const startIdx = claude.indexOf(START) + START.length;
+    const endIdx = claude.indexOf(END);
+    const body = claude.slice(startIdx, endIdx).trim();
+    expect(body).toBe(sectionsDefault.claudeMd.trim());
   });
 });

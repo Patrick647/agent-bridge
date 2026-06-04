@@ -56,7 +56,7 @@ Claude Code ── MCP stdio ──▶ bridge.ts (foreground)
 ### Data flow invariants
 
 - Every `BridgeMessage` carries a `source: "claude" | "codex"` — the bridge **never forwards a message back to its origin** (loop prevention).
-- Delivery mode is env-controlled by `AGENTBRIDGE_MODE` (`push` for channel notifications, `pull` for `get_messages`). Default is `push`.
+- Delivery mode is env-controlled by `AGENTBRIDGE_MODE` (`pull` for `get_messages`, `push` for channel notifications). Default is `pull`; opt into `push` only after verifying the Claude Code runtime surfaces channel notifications. Pull mode can still send a static poll hint via `AGENTBRIDGE_PULL_HINT=1`; the actual Codex content remains in `get_messages`.
 - Ports are fixed: `CODEX_WS_PORT=4500`, `CODEX_PROXY_PORT=4501`, `AGENTBRIDGE_CONTROL_PORT=4502`. One AgentBridge instance per machine (multi-project support is post-v1).
 - All state lives in the platform state dir (`AGENTBRIDGE_STATE_DIR`, default `~/Library/Application Support/AgentBridge/` on macOS, `$XDG_STATE_HOME/agentbridge/` on Linux). The daemon uses `startup.lock` + `killed` sentinel to coordinate startup and explicit-kill-don't-restart semantics.
 
@@ -94,6 +94,11 @@ Claude Code ── MCP stdio ──▶ bridge.ts (foreground)
 
 You are working in a **multi-agent environment** powered by AgentBridge.
 Another AI agent (Codex, by OpenAI) is available in a parallel session on this machine.
+
+### Communication mechanism
+- **Claude → Codex**: Use the AgentBridge MCP tools (`reply` / `get_messages`) — these are yours only.
+- **Codex → Claude**: Codex has no symmetric tool. The bridge transparently intercepts Codex's normal output and forwards it to you. Messages arrive via `get_messages` by default; pull mode may also show a static poll hint. Push notifications are opt-in via `AGENTBRIDGE_MODE=push`.
+- If Codex ever complains it can't find a "send-to-Claude" API, remind it that its side is transparent — it just writes a reply and you'll see it.
 
 ### When to collaborate vs. work solo
 - **Collaborate** when the task benefits from a second perspective, parallel execution, or capabilities you lack (e.g., sandboxed code execution, independent verification).

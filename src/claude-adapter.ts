@@ -5,7 +5,11 @@
  *   - Push mode (OAuth): real-time via notifications/claude/channel
  *   - Pull mode (API key): message queue + get_messages tool
  *
- * Mode defaults to push in auto mode, or set explicitly via AGENTBRIDGE_MODE env var.
+ * Auto mode defaults to pull. Claude Code channel notifications are
+ * experimental and can be accepted without being surfaced by newer runtimes.
+ * Set AGENTBRIDGE_MODE=push explicitly to opt into channel delivery.
+ * In pull mode, a small static channel hint is sent when messages are queued.
+ * The real Codex content stays in the get_messages queue.
  *
  * Emits:
  *   - "ready"   ()                   — MCP connected, mode resolved
@@ -52,6 +56,7 @@ export const CLAUDE_INSTRUCTIONS = [
   "## How to interact",
   "- Use the reply tool to send messages back to Codex — pass chat_id back.",
   "- Use the get_messages tool to check for pending messages from Codex.",
+  "- If you receive an AgentBridge poll hint, immediately call get_messages.",
   "- After sending a reply, call get_messages to check for responses.",
   "- When the user asks about Codex status or progress, call get_messages.",
   "",
@@ -67,6 +72,13 @@ export class ClaudeAdapter extends EventEmitter {
   private sessionId: string;
   private readonly notificationIdPrefix: string;
   private readonly instanceId: string;
+  /**
+   * `chatId` uniquely identifies THIS MCP/Claude session to the daemon so
+   * the daemon can route messages to the right ClaudeThread. We reuse
+   * `sessionId` (already shown to Claude as `chat_id:` in channel headers)
+   * so the human-visible value and the routing key are the same string.
+   */
+  readonly chatId: string;
   private replySender: ReplySender | null = null;
   private readonly logFile: string;
 
@@ -76,18 +88,27 @@ export class ClaudeAdapter extends EventEmitter {
   private pendingMessages: BridgeMessage[] = [];
   private readonly maxBufferedMessages: number;
   private droppedMessageCount = 0;
+  private pullHintSeq = 0;
+  private lastPullHintTs = 0;
+  private readonly pullHintEnabled: boolean;
+  private readonly pullHintCooldownMs: number;
 
   constructor(logFile = new StateDirResolver().logFile) {
     super();
     this.logFile = logFile;
     this.instanceId = randomUUID().slice(0, 8);
-    this.sessionId = `codex_${Date.now()}`;
+    this.sessionId = `codex_${Date.now()}_${this.instanceId}`;
+    this.chatId = this.sessionId;
     this.notificationIdPrefix = randomUUID().replace(/-/g, "").slice(0, 12);
     this.log(`ClaudeAdapter created (instance=${this.instanceId})`);
 
     const envMode = process.env.AGENTBRIDGE_MODE as DeliveryMode | undefined;
     this.configuredMode = envMode && ["push", "pull", "auto"].includes(envMode) ? envMode : "auto";
     this.maxBufferedMessages = parseInt(process.env.AGENTBRIDGE_MAX_BUFFERED_MESSAGES ?? "100", 10);
+    this.pullHintEnabled = !["0", "false", "off", "no"].includes(
+      (process.env.AGENTBRIDGE_PULL_HINT ?? "1").toLowerCase(),
+    );
+    this.pullHintCooldownMs = parseInt(process.env.AGENTBRIDGE_PULL_HINT_COOLDOWN_MS ?? "5000", 10);
 
     this.server = new Server(
       { name: "agentbridge", version: "0.1.0" },
@@ -137,12 +158,12 @@ export class ClaudeAdapter extends EventEmitter {
       this.resolvedMode = this.configuredMode;
       this.log(`Delivery mode set by AGENTBRIDGE_MODE: ${this.resolvedMode}`);
     } else {
-      // Default to push — AgentBridge always runs as a Claude Code plugin
-      // with --dangerously-load-development-channels, so channel delivery
-      // is available. If push fails, pushViaChannel already falls back to
-      // queueForPull per-message.
-      this.resolvedMode = "push";
-      this.log("Delivery mode defaulting to push (set AGENTBRIDGE_MODE=pull to use polling instead)");
+      // Default to pull. Some Claude Code builds accept
+      // notifications/claude/channel without surfacing them to the model, so
+      // push can look successful while messages are effectively lost. Users
+      // who have verified channel delivery can still opt in explicitly.
+      this.resolvedMode = "pull";
+      this.log("Delivery mode defaulting to pull (set AGENTBRIDGE_MODE=push to opt into channel notifications)");
     }
   }
 
@@ -154,6 +175,7 @@ export class ClaudeAdapter extends EventEmitter {
       await this.pushViaChannel(message);
     } else {
       this.queueForPull(message);
+      await this.pushPullHint();
     }
   }
 
@@ -191,6 +213,43 @@ export class ClaudeAdapter extends EventEmitter {
     }
     this.pendingMessages.push(message);
     this.log(`Queued message for pull (${this.pendingMessages.length} pending, instance=${this.instanceId})`);
+  }
+
+  private async pushPullHint() {
+    if (!this.pullHintEnabled || this.resolvedMode !== "pull") return;
+
+    const now = Date.now();
+    if (Number.isFinite(this.pullHintCooldownMs) && now - this.lastPullHintTs < this.pullHintCooldownMs) {
+      this.log(`Suppressing pull hint (cooldown, pending=${this.pendingMessages.length})`);
+      return;
+    }
+    this.lastPullHintTs = now;
+
+    const pending = this.pendingMessages.length;
+    const msgId = `codex_pull_hint_${this.notificationIdPrefix}_${++this.pullHintSeq}`;
+    const messageWord = pending === 1 ? "message" : "messages";
+
+    try {
+      await this.server.notification({
+        method: "notifications/claude/channel",
+        params: {
+          content:
+            `AgentBridge has ${pending} pending Codex ${messageWord}. ` +
+            "Use the agentbridge get_messages tool now to read them.",
+          meta: {
+            chat_id: this.sessionId,
+            message_id: msgId,
+            user: "AgentBridge",
+            user_id: "agentbridge",
+            ts: new Date(now).toISOString(),
+            source_type: "agentbridge_pull_hint",
+          },
+        },
+      });
+      this.log(`Pushed pull hint: ${msgId} (${pending} pending)`);
+    } catch (e: any) {
+      this.log(`Pull hint notification failed: ${e.message}`);
+    }
   }
 
   // ── get_messages ───────────────────────────────────────────

@@ -7,14 +7,72 @@ import { findPackageRoot, registerMarketplace } from "./pkg-root";
 import { upsertMarkedSection } from "../marker-section";
 import {
   MARKER_ID,
-  CLAUDE_MD_SECTION,
-  AGENTS_MD_SECTION,
+  getWorkflowSections,
+  isValidWorkflowPreset,
+  VALID_WORKFLOW_PRESETS,
+  WORKFLOW_DESCRIPTIONS,
+  type WorkflowPreset,
 } from "../collaboration-content";
 
 const MIN_CLAUDE_VERSION = "2.1.80";
 
-export async function runInit() {
-  console.log("AgentBridge Init\n");
+function parseInitFlags(args: string[]): { workflow: WorkflowPreset } {
+  let workflow: WorkflowPreset = "default";
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--workflow") {
+      if (i + 1 >= args.length) {
+        console.error(`Error: --workflow requires a value.`);
+        console.error(`Valid presets: ${VALID_WORKFLOW_PRESETS.join(", ")}`);
+        process.exit(1);
+      }
+      const value = args[i + 1];
+      if (!isValidWorkflowPreset(value)) {
+        console.error(`Error: --workflow "${value}" is not a recognized preset.`);
+        console.error(`Valid presets: ${VALID_WORKFLOW_PRESETS.join(", ")}`);
+        process.exit(1);
+      }
+      workflow = value;
+      i++;
+      continue;
+    }
+    if (a.startsWith("--workflow=")) {
+      const value = a.slice("--workflow=".length);
+      if (!isValidWorkflowPreset(value)) {
+        console.error(`Error: --workflow=${value} is not a recognized preset.`);
+        console.error(`Valid presets: ${VALID_WORKFLOW_PRESETS.join(", ")}`);
+        process.exit(1);
+      }
+      workflow = value;
+      continue;
+    }
+    // Other args are tolerated silently (forward-compat) — init has no
+    // owned-flags surface to police yet.
+  }
+  return { workflow };
+}
+
+function printWorkflowList(): void {
+  console.log(`Available workflow presets for \`abg init --workflow NAME\`:\n`);
+  for (const preset of VALID_WORKFLOW_PRESETS) {
+    console.log(`  ${preset}`);
+    console.log(`    ${WORKFLOW_DESCRIPTIONS[preset] ?? "(no description)"}`);
+    console.log("");
+  }
+  console.log(`Run \`abg init --workflow NAME\` in your project directory to apply.`);
+  console.log(`Re-running with a different preset overwrites the <!-- AgentBridge:* --> block in CLAUDE.md / AGENTS.md.`);
+}
+
+export async function runInit(args: string[] = []) {
+  // List-workflows shortcut: print available presets and exit, don't
+  // actually run init. (2026-05-18.)
+  if (args.includes("--list-workflows") || args.includes("--list-presets")) {
+    printWorkflowList();
+    return;
+  }
+
+  const { workflow } = parseInitFlags(args);
+  console.log(`AgentBridge Init${workflow === "default" ? "" : ` (workflow: ${workflow})`}\n`);
 
   // Step 1: Check dependencies
   console.log("Checking dependencies...");
@@ -40,7 +98,7 @@ export async function runInit() {
   // Step 3: Write collaboration sections to CLAUDE.md and AGENTS.md
   console.log("Writing collaboration sections...");
   const projectRoot = process.cwd();
-  const collabResults = writeCollaborationSections(projectRoot);
+  const collabResults = writeCollaborationSections(projectRoot, workflow);
   for (const result of collabResults) {
     console.log(`  ${result}`);
   }
@@ -132,12 +190,13 @@ function compareVersions(a: string, b: string): number {
  * Write or update AgentBridge collaboration sections in CLAUDE.md and AGENTS.md.
  * Returns human-readable status lines for each file.
  */
-export function writeCollaborationSections(projectRoot: string): string[] {
+export function writeCollaborationSections(projectRoot: string, workflow: WorkflowPreset = "default"): string[] {
   const results: string[] = [];
 
+  const sections = getWorkflowSections(workflow);
   const files: Array<{ name: string; path: string; section: string }> = [
-    { name: "CLAUDE.md", path: join(projectRoot, "CLAUDE.md"), section: CLAUDE_MD_SECTION },
-    { name: "AGENTS.md", path: join(projectRoot, "AGENTS.md"), section: AGENTS_MD_SECTION },
+    { name: "CLAUDE.md", path: join(projectRoot, "CLAUDE.md"), section: sections.claudeMd },
+    { name: "AGENTS.md", path: join(projectRoot, "AGENTS.md"), section: sections.agentsMd },
   ];
 
   for (const { name, path, section } of files) {

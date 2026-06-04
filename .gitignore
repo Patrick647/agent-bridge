@@ -4,11 +4,17 @@ coverage/
 *.log
 .DS_Store
 .claude/
+.agentbridge/
+AGENTS.md
 codex/
 agent_collab/
 codex-plugin-cc/
 /.mcp.json
 agentbridge-context.md
 V1_PROGRESS.md
+install.sh
+restore.sh
+UPSTREAM_*.md
+upstream.patch
 # Added by code-review-graph
 .code-review-graph/

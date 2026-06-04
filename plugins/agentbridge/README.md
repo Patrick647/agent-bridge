@@ -37,7 +37,7 @@ This creates self-contained bundles at:
 
 ## Notes
 
-- The plugin frontend launches the sibling daemon bundle via `AGENTBRIDGE_DAEMON_ENTRY=./daemon.js`.
-- Claude delivery supports both push notifications and pull-mode polling via `get_messages`, depending on the runtime mode.
+- The plugin frontend connects to an existing daemon. The Codex-side CLI owns daemon startup; `AGENTBRIDGE_DAEMON_ENTRY=./daemon.js` only keeps the plugin bundle path explicit if lifecycle diagnostics need it.
+- Claude delivery supports both push notifications and pull-mode polling via `get_messages`, depending on the runtime mode. Pull mode sends only a static channel hint when messages are queued; the Codex content stays in the `get_messages` queue.
 - The SessionStart hook is informational only. It never starts or stops the daemon.
 - The command at `/agentbridge:init` edits project-local `.agentbridge/` files only; plugin installation and marketplace registration remain terminal-side tasks (`agentbridge init` / `agentbridge dev`).

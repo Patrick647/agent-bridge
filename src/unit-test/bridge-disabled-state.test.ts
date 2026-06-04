@@ -14,4 +14,11 @@ describe("bridge disabled-state messaging", () => {
     expect(message).toContain("agentbridge kill");
     expect(message).not.toContain("/resume");
   });
+
+  test("missing daemon sessions tell the user to start Codex", () => {
+    const message = disabledReplyError("daemon_missing");
+    expect(message).toContain("daemon is not running");
+    expect(message).toContain("abg codex --via-proxy");
+    expect(message).toContain("get_messages");
+  });
 });
