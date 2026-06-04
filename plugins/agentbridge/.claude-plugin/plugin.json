@@ -3,10 +3,9 @@
   "version": "0.1.6",
   "description": "Bridge Claude Code and Codex with a shared daemon, pull-mode messaging, static poll hints, and bidirectional reply tooling.",
   "author": {
-    "name": "AgentBridge Contributors",
-    "email": "raysonmeng@qq.com"
+    "name": "AgentBridge Contributors"
   },
-  "homepage": "https://github.com/raysonmeng/agent-bridge#readme",
-  "repository": "https://github.com/raysonmeng/agent-bridge",
+  "homepage": "https://github.com/Patrick647/agent-bridge#readme",
+  "repository": "https://github.com/Patrick647/agent-bridge",
   "license": "MIT"
 }

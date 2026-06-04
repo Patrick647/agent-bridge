@@ -11,7 +11,7 @@ set -euo pipefail
 #   4. Commit on release branch, push, create PR, merge
 #   5. Create GitHub Release (triggers npm publish via Actions)
 
-REPO="raysonmeng/agent-bridge"
+REPO="Patrick647/agent-bridge"
 DRY_RUN=false
 
 # ── Parse args ────────────────────────────────────────────
@@ -229,7 +229,7 @@ append_section "Other" "其他" "$OTHERS"
 
 NOTES+=$'\n'"### Installation / 安装"$'\n'
 NOTES+='```bash'$'\n'
-NOTES+="npm install -g @raysonmeng/agentbridge"$'\n'
+NOTES+="npm install -g @patrick647/agent-bridge"$'\n'
 NOTES+='```'$'\n'
 NOTES+=$'\n'"**Full Changelog / 完整变更记录:** https://github.com/$REPO/compare/$COMPARE_BASE...v$NEW_VERSION"
 

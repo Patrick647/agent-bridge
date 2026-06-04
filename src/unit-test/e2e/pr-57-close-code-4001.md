@@ -68,6 +68,6 @@
 
 ### Related
 
-- PR: https://github.com/raysonmeng/agent-bridge/pull/57
+- PR: #57
 - Issues: #55 (Phase 1), #39, #58
 - Unit tests: `src/unit-test/daemon-client.test.ts`, `src/unit-test/codex-adapter.test.ts`, `src/unit-test/bridge-disabled-state.test.ts`

@@ -2,8 +2,10 @@
 
 English version: [README.md](README.md)
 
-[![CI](https://github.com/raysonmeng/agent-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/raysonmeng/agent-bridge/actions/workflows/ci.yml)
+[![CI](https://github.com/Patrick647/agent-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/Patrick647/agent-bridge/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+> Fork 自 [quilin-ai/agent-bridge](https://github.com/quilin-ai/agent-bridge)。
 
 让 Claude Code 和 Codex 在同一个工作会话中进行双向通信的本地 Bridge。
 
@@ -80,7 +82,7 @@ AgentBridge 采用两层进程结构：
 
 ```bash
 # 1. 在 Claude Code 中，添加 AgentBridge 市场
-/plugin marketplace add raysonmeng/agent-bridge
+/plugin marketplace add Patrick647/agent-bridge
 
 # 2. 安装插件
 /plugin install agentbridge@agentbridge
@@ -93,7 +95,7 @@ AgentBridge 采用两层进程结构：
 
 ```bash
 # 4. 全局安装 CLI
-npm install -g @raysonmeng/agentbridge
+npm install -g @patrick647/agent-bridge
 
 # 5. 生成项目配置（可选）
 abg init
@@ -126,7 +128,7 @@ abg codex
 
 ```bash
 # 1. 克隆并安装依赖
-git clone https://github.com/raysonmeng/agent-bridge.git
+git clone https://github.com/Patrick647/agent-bridge.git
 cd agent-bridge
 bun install
 bun link
@@ -274,19 +276,3 @@ Codex 运行在沙箱环境中，**禁止对 `.git` 目录进行任何写操作*
 - **v1.x（当前）**：在不改变架构的前提下优化单桥体验 -- 降噪、控回合、定角色。详见 [docs/v1-roadmap.md](docs/v1-roadmap.md)。
 - **v2（规划中）**：引入多 Agent 基础设施 -- Room 作用域协作、稳定身份、正式控制协议、更强的恢复语义。详见 [docs/v2-architecture.md](docs/v2-architecture.md)。
 - **v3+（远期）**：更智能的协作、更丰富的策略、跨 runtime 的高级编排。
-
-## 这个项目是怎么建成的
-
-这个项目由 **Claude Code**（Anthropic）和 **Codex**（OpenAI）通过 AgentBridge 本身进行实时双向通信，在人类开发者的指挥下协作完成。开发者负责分配任务、审查进度，并指挥两个 Agent 并行工作、互相 review。
-
-换句话说，AgentBridge 就是它自己的 proof of concept：两个来自不同厂商的 AI Agent，通过实时连接，肩并肩地交付代码。
-
-## 联系方式
-
-这是我首次开源的项目！欢迎对多 Agent 协作、AI 工具链感兴趣的朋友来交流，一起做一些更好玩的事情。
-
-- **Twitter/X**: [@raysonmeng](https://x.com/raysonmeng)
-- **小红书**: [主页](https://www.xiaohongshu.com/user/profile/62a3709d0000000021028b7e)
-- **微信**: 扫描下方二维码添加好友
-
-<img src="assets/wechat-qr.jpg" alt="微信二维码" width="300" />

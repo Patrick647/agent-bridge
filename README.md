@@ -1,9 +1,11 @@
 # AgentBridge
 
-[![CI](https://github.com/raysonmeng/agent-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/raysonmeng/agent-bridge/actions/workflows/ci.yml)
+[![CI](https://github.com/Patrick647/agent-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/Patrick647/agent-bridge/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 [中文文档](README.zh-CN.md)
+
+> Forked from [quilin-ai/agent-bridge](https://github.com/quilin-ai/agent-bridge).
 
 Local bridge for bidirectional communication between Claude Code and Codex inside the same working session.
 
@@ -80,7 +82,7 @@ Install AgentBridge directly from Claude Code using the plugin marketplace:
 
 ```bash
 # 1. In Claude Code, add the AgentBridge marketplace
-/plugin marketplace add raysonmeng/agent-bridge
+/plugin marketplace add Patrick647/agent-bridge
 
 # 2. Install the plugin
 /plugin install agentbridge@agentbridge
@@ -93,7 +95,7 @@ Then install the CLI tool:
 
 ```bash
 # 4. Install the CLI globally
-npm install -g @raysonmeng/agentbridge
+npm install -g @patrick647/agent-bridge
 
 # 5. Generate project config (optional)
 abg init
@@ -126,7 +128,7 @@ If you want to modify AgentBridge source code, use the local development setup i
 
 ```bash
 # 1. Clone and install dependencies
-git clone https://github.com/raysonmeng/agent-bridge.git
+git clone https://github.com/Patrick647/agent-bridge.git
 cd agent-bridge
 bun install
 bun link
@@ -274,19 +276,3 @@ Codex runs in a sandboxed environment that **blocks all writes to the `.git` dir
 - **v1.x (current)**: Improve the single-bridge experience without architectural refactoring -- less noise, better turn discipline, and clearer collaboration modes. See [docs/v1-roadmap.md](docs/v1-roadmap.md).
 - **v2 (planned)**: Introduce the multi-agent foundation -- room-scoped collaboration, stable identity, a formal control protocol, and stronger recovery semantics. See [docs/v2-architecture.md](docs/v2-architecture.md).
 - **v3+ (longer term)**: Explore smarter collaboration, richer policies, and more advanced orchestration across runtimes.
-
-## How This Project Was Built
-
-This project was built collaboratively by **Claude Code** (Anthropic) and **Codex** (OpenAI), communicating through AgentBridge itself -- the very tool they were building together. A human developer coordinated the effort, assigning tasks, reviewing progress, and directing the two agents to work in parallel and review each other's output.
-
-In other words, AgentBridge is its own proof of concept: two AI agents from different providers, connected in real time, shipping code side by side.
-
-## Contact
-
-This is my first open-source project! I'd love to connect with anyone interested in multi-agent collaboration, AI tooling, or just building cool things together. Feel free to reach out:
-
-- **Twitter/X**: [@raysonmeng](https://x.com/raysonmeng)
-- **Xiaohongshu**: [Profile](https://www.xiaohongshu.com/user/profile/62a3709d0000000021028b7e)
-- **WeChat**: Scan the QR code below to add me
-
-<img src="assets/wechat-qr.jpg" alt="WeChat QR Code" width="300" />

@@ -79,7 +79,7 @@ Claude Code ── MCP stdio ──▶ bridge.ts (foreground)
 ## Codex 协作
 
 - Codex sandbox 禁止写 `.git` —— 所有 git 操作（commit/push/PR）由 Claude 代劳。
-- Codex 在主目录 `/Users/raysonmeng/agent_bridge` 工作，Claude 使用 worktree（`/Users/raysonmeng/agent_bridge_wt_<PR号>`）。
+- Codex 在项目主目录工作，Claude 使用对应的 git worktree（如 `<repo>_wt_<PR号>`）。
 - 不要在 Codex active turn 期间发 `reply` —— busy guard 会拒绝。看到 `⏳ Codex is working` 时等 `✅ Codex finished` 再回复。
 - Codex TUI 的 resume 有已知 bug（GitHub #14470、#12382），建议开新会话。
 - 连接 Codex TUI 用 `agentbridge codex`（通过 `bun link` 安装）。

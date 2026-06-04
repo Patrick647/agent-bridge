@@ -2,7 +2,7 @@
 
 /**
  * postinstall: verify Bun, register marketplace, install plugin.
- * Runs after `npm install -g @raysonmeng/agentbridge`.
+ * Runs after `npm install -g @patrick647/agent-bridge`.
  *
  * All steps are best-effort — a failure here does not block the npm install.
  * Users can always fall back to `abg init` for manual setup.

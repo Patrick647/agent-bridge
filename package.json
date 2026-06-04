@@ -1,5 +1,5 @@
 {
-  "name": "@raysonmeng/agentbridge",
+  "name": "@patrick647/agent-bridge",
   "version": "0.1.6",
   "description": "Bridge between Claude Code and Codex — bidirectional agent communication via MCP Channel + JSON-RPC",
   "type": "module",
@@ -30,11 +30,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/raysonmeng/agent-bridge.git"
+    "url": "https://github.com/Patrick647/agent-bridge.git"
   },
-  "homepage": "https://github.com/raysonmeng/agent-bridge#readme",
+  "homepage": "https://github.com/Patrick647/agent-bridge#readme",
   "bugs": {
-    "url": "https://github.com/raysonmeng/agent-bridge/issues"
+    "url": "https://github.com/Patrick647/agent-bridge/issues"
   },
   "keywords": [
     "claude-code",
