@@ -119,9 +119,10 @@ daemonClient.on("rejected", async () => {
 });
 
 claude.on("ready", async () => {
-  log(`MCP server ready (delivery mode: ${claude.getDeliveryMode()}) — ensuring AgentBridge daemon...`);
+  log(`MCP server ready (delivery mode: ${claude.getDeliveryMode()}) — connecting to AgentBridge daemon...`);
   if (daemonLifecycle.wasKilled()) {
     await enterDisabledState(
+      "killed",
       "Killed sentinel found — bridge staying idle",
       "⛔ AgentBridge was stopped by `agentbridge kill`. Bridge is staying idle. Restart Claude Code (`agentbridge claude`), switch to a new conversation, or run `/resume` to reconnect.",
     );
@@ -130,14 +131,28 @@ claude.on("ready", async () => {
   await connectToDaemon();
 });
 
-async function connectToDaemon(isReconnect = false) {
+async function connectToDaemon(isReconnect = false): Promise<boolean> {
   if (daemonDisabled) {
     log("connectToDaemon() skipped — bridge is disabled");
-    return;
+    return false;
   }
 
   try {
-    await daemonLifecycle.ensureRunning();
+    // Claude frontend processes are frequently restarted by Claude Code
+    // Desktop/local-agent mode. If a frontend owns daemon startup, those
+    // restarts can take the shared daemon and Codex TUI down with it. Treat
+    // Codex/TUI as the daemon owner; Claude only connects to an existing
+    // daemon and waits for `abg codex --via-proxy` when none is running.
+    const healthy = await daemonLifecycle.isHealthy();
+    if (!healthy) {
+      await enterDisabledState(
+        "daemon_missing",
+        "AgentBridge daemon is not running — waiting for Codex-side startup",
+        "⏳ AgentBridge daemon is not running. Start Codex in another terminal with: `abg codex --via-proxy`. This Claude plugin will reconnect automatically after the daemon is healthy.",
+      );
+      return false;
+    }
+
     await daemonClient.connect();
     // STM v2.3 §D6 P4-cleanup HIGH#2: await the typed claude_connect_result
     // and surface PAIR_NOT_FOUND / PAIR_BUSY / INVALID_PAIR_NAME as a
@@ -152,7 +167,7 @@ async function connectToDaemon(isReconnect = false) {
         "system_bridge_disabled",
         `❌ AgentBridge could not attach this Claude session: ${attachResult.error}. ${attachResult.message}${pairCtx}`,
       ));
-      return;
+      return false;
     }
     daemonDisabledReason = null;
     if (!isReconnect) {
@@ -163,9 +178,10 @@ async function connectToDaemon(isReconnect = false) {
           : "";
       void claude.pushNotification(systemMessage(
         "system_bridge_ready",
-        `✅ AgentBridge bridge is ready. Daemon connected${pairCtx}. Start Codex in another terminal with: agentbridge codex`,
+        `✅ AgentBridge bridge is ready. Daemon connected${pairCtx}. Start Codex in another terminal with: abg codex --via-proxy`,
       ));
     }
+    return true;
   } catch (err: any) {
     log(`Failed to connect to daemon: ${err.message}`);
     await claude.pushNotification(
@@ -174,15 +190,15 @@ async function connectToDaemon(isReconnect = false) {
         `❌ AgentBridge daemon failed to start or is unreachable: ${err.message}`,
       ),
     );
-    throw err;
+    return false;
   }
 }
 
-async function enterDisabledState(logMessage: string, notificationContent: string) {
+async function enterDisabledState(reason: BridgeDisabledReason, logMessage: string, notificationContent: string) {
   if (daemonDisabled) return;
 
   daemonDisabled = true;
-  daemonDisabledReason = "killed";
+  daemonDisabledReason = reason;
   log(logMessage);
   await claude.pushNotification(systemMessage("system_bridge_disabled", notificationContent));
   await daemonClient.disconnect();
@@ -196,6 +212,7 @@ async function notifyIfDaemonKilled(logMessage: string) {
   if (!daemonLifecycle.wasKilled()) return false;
 
   await enterDisabledState(
+    "killed",
     logMessage,
     "⛔ AgentBridge was stopped by `agentbridge kill`. Bridge is staying idle. Restart Claude Code (`agentbridge claude`), switch to a new conversation, or run `/resume` to reconnect.",
   );
@@ -232,7 +249,8 @@ function reconnectToDaemon(): Promise<void> {
         }
 
         try {
-          await connectToDaemon(true);
+          const connected = await connectToDaemon(true);
+          if (!connected) return;
           log("Reconnected to AgentBridge daemon successfully");
 
           const now = Date.now();

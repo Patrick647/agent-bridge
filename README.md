@@ -98,7 +98,7 @@ npm install -g @raysonmeng/agentbridge
 # 5. Generate project config (optional)
 abg init
 
-# 6. Start Claude Code with AgentBridge channel enabled
+# 6. Start Claude Code with AgentBridge enabled
 abg claude
 
 # 7. Start Codex TUI connected to the bridge (in another terminal)
@@ -155,7 +155,7 @@ After modifying AgentBridge source code, re-run `agentbridge dev` to sync change
 | Command | Description |
 |---------|-------------|
 | `abg init` | Install plugin, check dependencies (bun/claude/codex), generate `.agentbridge/config.json` |
-| `abg claude [args...]` | Start Claude Code with push channel enabled. Clears any killed sentinel from a previous `kill`. Pass-through args are forwarded to `claude` |
+| `abg claude [args...]` | Start Claude Code with AgentBridge enabled. Clears any killed sentinel from a previous `kill`. Pass-through args are forwarded to `claude` |
 | `abg codex [args...]` | Start Codex TUI connected to AgentBridge daemon. Manages TUI process lifecycle (pid tracking, cleanup). Pass-through args forwarded to `codex` |
 | `abg kill` | Gracefully stop both daemon and managed Codex TUI, clean up state files, write killed sentinel |
 | `abg dev` | (Dev only) Register local marketplace + force-sync plugin to cache |
@@ -240,8 +240,10 @@ agent_bridge/
 | `CODEX_PROXY_PORT` | `4501` | Bridge proxy port for the Codex TUI |
 | `AGENTBRIDGE_CONTROL_PORT` | `4502` | Control port between bridge.ts and daemon.ts |
 | `AGENTBRIDGE_STATE_DIR` | Platform default | State directory for pid, status, logs (macOS: `~/Library/Application Support/agentbridge/`, Linux: `$XDG_STATE_HOME/agentbridge/`) |
-| `AGENTBRIDGE_MODE` | `push` | Message delivery mode (`push` for channels, `pull` for API key mode) |
-| `AGENTBRIDGE_DAEMON_ENTRY` | `./daemon.ts` | Override daemon entry point (used by plugin bundles) |
+| `AGENTBRIDGE_MODE` | `pull` | Message delivery mode (`pull` for `get_messages`, `push` for experimental channel notifications) |
+| `AGENTBRIDGE_PULL_HINT` | `1` | In pull mode, send a static channel hint when Codex messages are queued. The actual Codex content remains in `get_messages`. Set `0` to disable. |
+| `AGENTBRIDGE_PULL_HINT_COOLDOWN_MS` | `5000` | Minimum interval between pull-mode channel hints |
+| `AGENTBRIDGE_DAEMON_ENTRY` | Auto-detected | Override daemon entry point. Defaults resolve `src/daemon.ts` in dev, `plugins/agentbridge/server/daemon.js` from the CLI bundle, or sibling `daemon.js` in plugin bundles. |
 
 ### State Directory
 

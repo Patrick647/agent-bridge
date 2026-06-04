@@ -6,7 +6,7 @@
  * Commands:
  *   agentbridge init        — Install plugin, check deps, generate project config
  *   agentbridge dev         — Register local marketplace + install plugin for local dev
- *   agentbridge claude      — Start Claude Code with push channel flags
+ *   agentbridge claude      — Start Claude Code with AgentBridge plugin flags
  *   agentbridge codex       — Start Codex TUI connected to daemon
  *   agentbridge kill        — Force kill all AgentBridge processes
  */
@@ -84,7 +84,7 @@ Usage:
 Commands:
   init              Install plugin, check dependencies, generate project config
   dev               Register local marketplace + install plugin (for local dev)
-  claude [args...]  Start Claude Code with push channel enabled
+  claude [args...]  Start Claude Code with AgentBridge enabled
                     Use --pair NAME to pre-bind to a specific pair (STM v2.3)
   codex [args...]   Start Codex TUI connected to AgentBridge daemon
                     Use --pair NAME to target a specific pair (STM v2.3)

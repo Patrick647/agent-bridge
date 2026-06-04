@@ -398,7 +398,7 @@ export async function runCodex(rawArgs: string[]) {
     console.error("[agentbridge] Daemon is ready.");
   } catch (err: any) {
     console.error(`[agentbridge] Failed to start daemon: ${err.message}`);
-    console.error("[agentbridge] Try: agentbridge kill && agentbridge claude");
+    console.error("[agentbridge] Try: agentbridge kill && agentbridge codex --via-proxy");
     process.exit(1);
   }
 

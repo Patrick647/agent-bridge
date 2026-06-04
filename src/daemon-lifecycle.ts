@@ -3,10 +3,31 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync, openSync, closeSyn
 import { fileURLToPath } from "node:url";
 import { StateDirResolver } from "./state-dir";
 
-// When bundled into a Claude Code plugin, the frontend runs from the plugin
-// cache directory and must launch the sibling daemon bundle from there.
-const DAEMON_ENTRY = process.env.AGENTBRIDGE_DAEMON_ENTRY ?? "./daemon.ts";
-const DAEMON_PATH = fileURLToPath(new URL(DAEMON_ENTRY, import.meta.url));
+const DEFAULT_DAEMON_ENTRIES = [
+  // Source/dev mode: `bun run src/cli.ts ...`
+  "./daemon.ts",
+  // Published CLI bundle: `dist/cli.js` with plugin daemon bundle beside it.
+  "../plugins/agentbridge/server/daemon.js",
+  // Plugin bundle fallback: `plugins/agentbridge/server/bridge-server.js`.
+  "./daemon.js",
+];
+
+export function resolveDaemonPath(entry: string | undefined, baseUrl = import.meta.url): string {
+  if (entry) {
+    return fileURLToPath(new URL(entry, baseUrl));
+  }
+
+  for (const candidate of DEFAULT_DAEMON_ENTRIES) {
+    const candidatePath = fileURLToPath(new URL(candidate, baseUrl));
+    if (existsSync(candidatePath)) {
+      return candidatePath;
+    }
+  }
+
+  return fileURLToPath(new URL(DEFAULT_DAEMON_ENTRIES[0], baseUrl));
+}
+
+const DAEMON_PATH = resolveDaemonPath(process.env.AGENTBRIDGE_DAEMON_ENTRY);
 
 export interface DaemonLifecycleOptions {
   stateDir: StateDirResolver;

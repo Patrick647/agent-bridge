@@ -2112,8 +2112,24 @@ class TuiConnectionState {
 import { spawn as spawn2, execFileSync } from "child_process";
 import { existsSync as existsSync3, readFileSync, unlinkSync as unlinkSync2, writeFileSync, openSync, closeSync, constants } from "fs";
 import { fileURLToPath } from "url";
-var DAEMON_ENTRY = process.env.AGENTBRIDGE_DAEMON_ENTRY ?? "./daemon.ts";
-var DAEMON_PATH = fileURLToPath(new URL(DAEMON_ENTRY, import.meta.url));
+var DEFAULT_DAEMON_ENTRIES = [
+  "./daemon.ts",
+  "../plugins/agentbridge/server/daemon.js",
+  "./daemon.js"
+];
+function resolveDaemonPath(entry, baseUrl = import.meta.url) {
+  if (entry) {
+    return fileURLToPath(new URL(entry, baseUrl));
+  }
+  for (const candidate of DEFAULT_DAEMON_ENTRIES) {
+    const candidatePath = fileURLToPath(new URL(candidate, baseUrl));
+    if (existsSync3(candidatePath)) {
+      return candidatePath;
+    }
+  }
+  return fileURLToPath(new URL(DEFAULT_DAEMON_ENTRIES[0], baseUrl));
+}
+var DAEMON_PATH = resolveDaemonPath(process.env.AGENTBRIDGE_DAEMON_ENTRY);
 
 class DaemonLifecycle {
   stateDir;
@@ -3283,6 +3299,73 @@ function handleListPairs(ws, message) {
     pairs: result
   });
 }
+function isLiveBridgeWs(state) {
+  return state.ws !== null && state.ws.readyState !== WebSocket.CLOSED;
+}
+function claimIsolatedChatForPair(state, targetPair, opts) {
+  const targetSlot = targetPair.proxyTuiSlot;
+  if (!targetSlot) {
+    throw new Error(`Pair "${targetPair.pairId}" has no proxy TUI slot`);
+  }
+  if (targetSlot.pairedChatId !== null) {
+    throw new Error(`Pair "${targetPair.pairId}" is already paired with chatId="${targetSlot.pairedChatId}"`);
+  }
+  try {
+    state.thread.removeAllListeners();
+  } catch (err) {
+    log(`[${state.chatId}] ${opts.logContext}: removeAllListeners threw: ${err?.message ?? err}`);
+  }
+  try {
+    state.thread.close();
+  } catch (err) {
+    log(`[${state.chatId}] ${opts.logContext}: old thread.close() threw: ${err?.message ?? err}`);
+  }
+  clearDisconnectTimer(state, opts.logContext);
+  clearReaperTimer(state, opts.logContext);
+  state.homePairId = targetPair.pairId;
+  targetSlot.pairedChatId = state.chatId;
+  if (targetSlot.pairReapTimer) {
+    clearTimeout(targetSlot.pairReapTimer);
+    targetSlot.pairReapTimer = null;
+  }
+  state.paired = true;
+  targetPair.codex.setPairedChat(state.chatId);
+  state.ready = targetSlot.readiness === "ready";
+  log(`[${state.chatId}] ${opts.logContext}: paired to "${targetPair.pairId}" (readiness=${targetSlot.readiness})`);
+  emitToChat(state, systemMessage(state.ready ? opts.readyMessageId : opts.provisioningMessageId, state.ready ? opts.readyContent : opts.provisioningContent));
+  broadcastStatus();
+}
+function findAutoPairCandidate(pair) {
+  for (const state of chats.values()) {
+    if (state.paired)
+      continue;
+    if (state.homePairId !== pair.pairId)
+      continue;
+    if (!isLiveBridgeWs(state))
+      continue;
+    return state;
+  }
+  return null;
+}
+function autoClaimFreedProxySlot(pair, reason) {
+  const slot = pair.proxyTuiSlot;
+  if (!pair.isLive || !slot || slot.pairedChatId !== null)
+    return false;
+  const candidate = findAutoPairCandidate(pair);
+  if (!candidate) {
+    log(`[pair=${pair.pairId}] No attached isolated Claude eligible for auto-pair after ${reason}`);
+    return false;
+  }
+  const activeTurnNote = candidate.thread.isTurnInProgress ? " Any in-flight isolated turn was terminated; resend the last request if needed." : "";
+  claimIsolatedChatForPair(candidate, pair, {
+    logContext: `auto_claim_freed_slot (${reason})`,
+    readyMessageId: "system_paired_ready_auto_claimed",
+    provisioningMessageId: "system_paired_provisioning_auto_claimed",
+    readyContent: `\u2705 Auto-paired with the freed right-pane Codex TUI on pair "${pair.pairId}". Replies will appear there; user typing in the TUI will be forwarded to you with an [IMPORTANT] prefix.${activeTurnNote}`,
+    provisioningContent: `\u2705 Auto-paired with the freed right-pane Codex TUI on pair "${pair.pairId}". Waiting for the shared thread to finish provisioning before replies can flow.${activeTurnNote}`
+  });
+  return true;
+}
 function handleClaimPairForChat(ws, message) {
   const { chatId, pairId, requestId, force } = message;
   const state = chats.get(chatId);
@@ -3402,24 +3485,13 @@ function handleClaimPairForChat(ws, message) {
       return;
     }
   }
-  try {
-    state.thread.removeAllListeners();
-  } catch (err) {
-    log(`[${chatId}] claim_pair_for_chat: removeAllListeners threw: ${err?.message ?? err}`);
-  }
-  try {
-    state.thread.close();
-  } catch (err) {
-    log(`[${chatId}] claim_pair_for_chat: old thread.close() threw: ${err?.message ?? err}`);
-  }
-  state.homePairId = targetPair.pairId;
-  targetPair.proxyTuiSlot.pairedChatId = chatId;
-  state.paired = true;
-  targetPair.codex.setPairedChat(chatId);
-  state.ready = targetPair.proxyTuiSlot.readiness === "ready";
-  log(`[${chatId}] claim_pair_for_chat: paired to "${targetPair.pairId}" (readiness=${targetPair.proxyTuiSlot.readiness})`);
-  emitToChat(state, systemMessage(state.ready ? "system_paired_ready_retroactive" : "system_paired_provisioning_retroactive", state.ready ? `\u2705 Retroactively paired with the right-pane Codex TUI on pair "${targetPair.pairId}". Replies will appear there; user typing in the TUI will be forwarded to you with an [IMPORTANT] prefix.` : `\u2705 Retroactively paired with the right-pane Codex TUI on pair "${targetPair.pairId}". Waiting for the shared thread to finish provisioning before replies can flow.`));
-  broadcastStatus();
+  claimIsolatedChatForPair(state, targetPair, {
+    logContext: "claim_pair_for_chat",
+    readyMessageId: "system_paired_ready_retroactive",
+    provisioningMessageId: "system_paired_provisioning_retroactive",
+    readyContent: `\u2705 Retroactively paired with the right-pane Codex TUI on pair "${targetPair.pairId}". Replies will appear there; user typing in the TUI will be forwarded to you with an [IMPORTANT] prefix.`,
+    provisioningContent: `\u2705 Retroactively paired with the right-pane Codex TUI on pair "${targetPair.pairId}". Waiting for the shared thread to finish provisioning before replies can flow.`
+  });
   sendProtocolMessage(ws, {
     type: "pair_claimed",
     requestId,
@@ -3728,6 +3800,8 @@ function detachClaudeWs(state, reason) {
         if (currentState.reaperTimer)
           clearTimeout(currentState.reaperTimer);
         chats.delete(state.chatId);
+      }
+      if (!autoClaimFreedProxySlot(currentPair, `stale paired Claude ${state.chatId} reaped`)) {
         broadcastStatus();
       }
     }, PAIR_REAP_MS);

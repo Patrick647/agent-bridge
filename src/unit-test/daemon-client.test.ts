@@ -275,32 +275,56 @@ describe("DaemonClient", () => {
 
   test("attachClaude sends claude_connect message", async () => {
     const received = new Promise<any>((resolve) => {
-      onServerMessage = (_ws: any, raw: any) => {
-        resolve(JSON.parse(typeof raw === "string" ? raw : raw.toString()));
+      onServerMessage = (ws: any, raw: any) => {
+        const msg = JSON.parse(typeof raw === "string" ? raw : raw.toString());
+        if (msg.type === "claude_connect") {
+          ws.send(JSON.stringify({
+            type: "claude_connect_result",
+            requestId: msg.requestId,
+            ok: true,
+            chatId: msg.chatId ?? "test-chat",
+            homePairId: "default",
+            paired: false,
+          }));
+        }
+        resolve(msg);
       };
     });
 
     await client.connect();
-    void client.attachClaude(1000);  // fire-and-forget; will timeout-to-ok
+    const attachPromise = client.attachClaude(1000);
 
     const msg = await received;
     expect(msg.type).toBe("claude_connect");
+    await expect(attachPromise).resolves.toMatchObject({ ok: true });
   });
 
   // ── STM v2.3 §D4 / §D6 P4-cleanup HIGH#2 regression tests ─────────────
 
   test("P4 attachClaude: sends requestId so daemon responses can correlate", async () => {
     const received = new Promise<any>((resolve) => {
-      onServerMessage = (_ws: any, raw: any) => {
-        resolve(JSON.parse(typeof raw === "string" ? raw : raw.toString()));
+      onServerMessage = (ws: any, raw: any) => {
+        const msg = JSON.parse(typeof raw === "string" ? raw : raw.toString());
+        if (msg.type === "claude_connect") {
+          ws.send(JSON.stringify({
+            type: "claude_connect_result",
+            requestId: msg.requestId,
+            ok: true,
+            chatId: msg.chatId ?? "test-chat",
+            homePairId: "default",
+            paired: false,
+          }));
+        }
+        resolve(msg);
       };
     });
     await client.connect();
-    void client.attachClaude(1000);
+    const attachPromise = client.attachClaude(1000);
     const msg = await received;
     expect(msg.type).toBe("claude_connect");
     expect(typeof msg.requestId).toBe("string");
     expect(msg.requestId.length).toBeGreaterThan(0);
+    await expect(attachPromise).resolves.toMatchObject({ ok: true });
   });
 
   test("P4 attachClaude: forwards pairId from constructor", async () => {
@@ -310,15 +334,27 @@ describe("DaemonClient", () => {
       { chatId: "chat-abc", pairId: "work" },
     );
     const received = new Promise<any>((resolve) => {
-      onServerMessage = (_ws: any, raw: any) => {
-        resolve(JSON.parse(typeof raw === "string" ? raw : raw.toString()));
+      onServerMessage = (ws: any, raw: any) => {
+        const msg = JSON.parse(typeof raw === "string" ? raw : raw.toString());
+        if (msg.type === "claude_connect") {
+          ws.send(JSON.stringify({
+            type: "claude_connect_result",
+            requestId: msg.requestId,
+            ok: true,
+            chatId: msg.chatId ?? "test-chat",
+            homePairId: "default",
+            paired: false,
+          }));
+        }
+        resolve(msg);
       };
     });
     await pairedClient.connect();
-    void pairedClient.attachClaude(1000);
+    const attachPromise = pairedClient.attachClaude(1000);
     const msg = await received;
     expect(msg.pairId).toBe("work");
     expect(msg.chatId).toBe("chat-abc");
+    await expect(attachPromise).resolves.toMatchObject({ ok: true });
     await pairedClient.disconnect();
   });
 

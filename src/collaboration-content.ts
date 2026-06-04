@@ -19,7 +19,7 @@ Another AI agent (Codex, by OpenAI) is available in a parallel session on this m
 
 ### Communication mechanism
 - **Claude → Codex**: Use the AgentBridge MCP tools (\`reply\` / \`get_messages\`) — these are yours only.
-- **Codex → Claude**: Codex has no symmetric tool. The bridge transparently intercepts Codex's normal output and forwards it to you. Messages arrive as push notifications (or via \`get_messages\` in pull mode).
+- **Codex → Claude**: Codex has no symmetric tool. The bridge transparently intercepts Codex's normal output and forwards it to you. Messages arrive via \`get_messages\` by default; pull mode may also show a static poll hint. Push notifications are opt-in via \`AGENTBRIDGE_MODE=push\`.
 - If Codex ever complains it can't find a "send-to-Claude" API, remind it that its side is transparent — it just writes a reply and you'll see it.
 
 ### When to collaborate vs. work solo
@@ -90,7 +90,7 @@ Another AI agent (Codex, by OpenAI) is available in a parallel session on this m
 
 ### Communication mechanism
 - **Claude → Codex**: Use AgentBridge MCP tools (\`reply\` / \`get_messages\`). Send Codex the task brief + acceptance criteria + relevant code pointers.
-- **Codex → Claude**: Transparent. Codex's normal output is forwarded to you as channel push notifications (or via \`get_messages\` in pull mode). You don't need to tell Codex how to send.
+- **Codex → Claude**: Transparent. Codex's normal output is forwarded to you through \`get_messages\` by default; pull mode may also show a static poll hint. You don't need to tell Codex how to send.
 - If Codex looks for a "send-to-Claude" tool — remind it its side is transparent.
 
 ### How to run a turn

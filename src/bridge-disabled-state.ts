@@ -1,4 +1,4 @@
-export type BridgeDisabledReason = "killed" | "rejected" | "daemon_rejected_attach";
+export type BridgeDisabledReason = "killed" | "rejected" | "daemon_rejected_attach" | "daemon_missing";
 
 export function disabledReplyError(reason: BridgeDisabledReason): string {
   switch (reason) {
@@ -13,5 +13,7 @@ export function disabledReplyError(reason: BridgeDisabledReason): string {
       // notification when the rejection happened; this string is the
       // fallback shown if reply tool is called before the user reads it.
       return "AgentBridge could not attach this Claude session — the daemon rejected the pair binding. See the most recent system message for the specific error (PAIR_NOT_FOUND / PAIR_BUSY / INVALID_PAIR_NAME). Restart Claude Code after fixing the underlying issue.";
+    case "daemon_missing":
+      return "AgentBridge daemon is not running. Start Codex with `abg codex --via-proxy`, then call `get_messages` again after the bridge reconnects.";
   }
 }

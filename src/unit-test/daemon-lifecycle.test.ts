@@ -1,9 +1,10 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import { StateDirResolver } from "../state-dir";
-import { DaemonLifecycle, isProcessAlive } from "../daemon-lifecycle";
+import { DaemonLifecycle, isProcessAlive, resolveDaemonPath } from "../daemon-lifecycle";
 
 describe("DaemonLifecycle", () => {
   let tempDir: string;
@@ -126,6 +127,59 @@ describe("DaemonLifecycle", () => {
     // Process is dead, so kill returns false before reaching isDaemonProcess
     const result = await lc.kill();
     expect(result).toBe(false);
+  });
+});
+
+describe("resolveDaemonPath", () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "agentbridge-daemon-path-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function baseUrl(path: string): string {
+    return pathToFileURL(path).href;
+  }
+
+  test("uses an explicit daemon entry when provided", () => {
+    const explicitPath = join(tempDir, "custom-daemon.ts");
+    const sourceEntry = join(tempDir, "src", "cli.ts");
+    mkdirSync(join(tempDir, "src"), { recursive: true });
+
+    expect(resolveDaemonPath(explicitPath, baseUrl(sourceEntry))).toBe(explicitPath);
+  });
+
+  test("prefers source daemon in dev mode", () => {
+    const sourceDir = join(tempDir, "src");
+    mkdirSync(sourceDir, { recursive: true });
+    const daemonPath = join(sourceDir, "daemon.ts");
+    writeFileSync(daemonPath, "// source daemon\n", "utf-8");
+
+    expect(resolveDaemonPath(undefined, baseUrl(join(sourceDir, "cli.ts")))).toBe(daemonPath);
+  });
+
+  test("finds the plugin daemon bundle from the CLI bundle", () => {
+    const distDir = join(tempDir, "dist");
+    const pluginServerDir = join(tempDir, "plugins", "agentbridge", "server");
+    mkdirSync(distDir, { recursive: true });
+    mkdirSync(pluginServerDir, { recursive: true });
+    const daemonPath = join(pluginServerDir, "daemon.js");
+    writeFileSync(daemonPath, "// bundled daemon\n", "utf-8");
+
+    expect(resolveDaemonPath(undefined, baseUrl(join(distDir, "cli.js")))).toBe(daemonPath);
+  });
+
+  test("falls back to sibling daemon bundle inside the plugin server", () => {
+    const pluginServerDir = join(tempDir, "plugins", "agentbridge", "server");
+    mkdirSync(pluginServerDir, { recursive: true });
+    const daemonPath = join(pluginServerDir, "daemon.js");
+    writeFileSync(daemonPath, "// sibling daemon\n", "utf-8");
+
+    expect(resolveDaemonPath(undefined, baseUrl(join(pluginServerDir, "bridge-server.js")))).toBe(daemonPath);
   });
 });
 

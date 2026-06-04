@@ -98,7 +98,7 @@ npm install -g @raysonmeng/agentbridge
 # 5. 生成项目配置（可选）
 abg init
 
-# 6. 启动 Claude Code（自动加载 AgentBridge channel）
+# 6. 启动 Claude Code（自动加载 AgentBridge）
 abg claude
 
 # 7. 在另一个终端启动 Codex TUI 连接 Bridge
@@ -155,7 +155,7 @@ agentbridge codex
 | 命令 | 说明 |
 |------|------|
 | `abg init` | 安装插件、检查依赖（bun/claude/codex）、生成 `.agentbridge/config.json` |
-| `abg claude [args...]` | 启动 Claude Code 并启用 push channel。自动清除之前 `kill` 留下的 sentinel。额外参数透传给 `claude` |
+| `abg claude [args...]` | 启动 Claude Code 并启用 AgentBridge。自动清除之前 `kill` 留下的 sentinel。额外参数透传给 `claude` |
 | `abg codex [args...]` | 启动连接到 AgentBridge daemon 的 Codex TUI。管理 TUI 进程生命周期（pid 跟踪、清理）。额外参数透传给 `codex` |
 | `abg kill` | 优雅停止 daemon 和托管的 Codex TUI，清理状态文件，写入 killed sentinel |
 | `abg dev` | （开发用）注册本地 marketplace + 强制同步插件到缓存 |
@@ -240,8 +240,10 @@ agent_bridge/
 | `CODEX_PROXY_PORT` | `4501` | Bridge 代理端口，Codex TUI 连接此端口 |
 | `AGENTBRIDGE_CONTROL_PORT` | `4502` | bridge.ts 与 daemon.ts 之间的控制端口 |
 | `AGENTBRIDGE_STATE_DIR` | 平台默认 | 状态目录（pid、status、日志）。macOS: `~/Library/Application Support/agentbridge/`，Linux: `$XDG_STATE_HOME/agentbridge/` |
-| `AGENTBRIDGE_MODE` | `push` | 消息投递模式（`push` 用于 channel，`pull` 用于 API key 模式） |
-| `AGENTBRIDGE_DAEMON_ENTRY` | `./daemon.ts` | 覆盖 daemon 入口（插件包使用） |
+| `AGENTBRIDGE_MODE` | `pull` | 消息投递模式（`pull` 走 `get_messages`，`push` 走实验性 channel 通知） |
+| `AGENTBRIDGE_PULL_HINT` | `1` | pull 模式下，当 Codex 消息入队时发送一条静态 channel 提醒；真实 Codex 内容仍留在 `get_messages` 中。设为 `0` 可关闭 |
+| `AGENTBRIDGE_PULL_HINT_COOLDOWN_MS` | `5000` | pull 模式 channel 提醒的最小间隔 |
+| `AGENTBRIDGE_DAEMON_ENTRY` | 自动探测 | 覆盖 daemon 入口。默认会在开发模式使用 `src/daemon.ts`，CLI 打包模式使用 `plugins/agentbridge/server/daemon.js`，插件包内使用同级 `daemon.js`。 |
 
 ### 状态目录
 

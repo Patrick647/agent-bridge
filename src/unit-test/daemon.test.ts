@@ -156,6 +156,61 @@ describe("daemon paired-Claude grace window (spec v2.2 §5)", () => {
     expect(chats.has("chat_g")).toBe(false);
   });
 
+  test("pairReapTimer auto-claims an attached isolated chat after stale paired chat expires", async () => {
+    __testing.pairs.get("default")!.isLive = true;
+    __testing.setProxyTuiSlot(makeSlot({ readiness: "ready" }));
+
+    const stale = fns.createChatState("chat_stale_pair");
+    chats.set(stale.chatId, stale);
+    attachFakeWs(stale);
+    fns.pairChat(stale);
+
+    const isolated = fns.createChatState("chat_waiting_isolated");
+    isolated.ready = true;
+    isolated.homePairId = "default";
+    chats.set(isolated.chatId, isolated);
+    attachFakeWs(isolated);
+    const beforeCount = isolated.bufferedMessages.length;
+
+    fns.detachClaudeWs(stale, "test stale detach");
+
+    await new Promise((r) => setTimeout(r, config.PAIR_REAP_MS + 80));
+
+    expect(chats.has(stale.chatId)).toBe(false);
+    expect(chats.has(isolated.chatId)).toBe(true);
+    expect(isolated.paired).toBe(true);
+    expect(isolated.ready).toBe(true);
+    expect(__testing.proxyTuiSlot?.pairedChatId).toBe(isolated.chatId);
+
+    const newMessages = isolated.bufferedMessages.slice(beforeCount);
+    expect(findMessage(newMessages, "system_paired_ready_auto_claimed")).toBeDefined();
+  });
+
+  test("pairReapTimer does not auto-claim a detached isolated chat", async () => {
+    __testing.pairs.get("default")!.isLive = true;
+    __testing.setProxyTuiSlot(makeSlot({ readiness: "ready" }));
+
+    const stale = fns.createChatState("chat_stale_no_candidate");
+    chats.set(stale.chatId, stale);
+    attachFakeWs(stale);
+    fns.pairChat(stale);
+
+    const detached = fns.createChatState("chat_detached_isolated");
+    detached.ready = true;
+    detached.homePairId = "default";
+    detached.ws = null;
+    chats.set(detached.chatId, detached);
+
+    fns.detachClaudeWs(stale, "test stale detach with detached isolated");
+
+    await new Promise((r) => setTimeout(r, config.PAIR_REAP_MS + 80));
+
+    expect(chats.has(stale.chatId)).toBe(false);
+    expect(chats.has(detached.chatId)).toBe(true);
+    expect(detached.paired).toBe(false);
+    expect(__testing.proxyTuiSlot?.pairedChatId).toBeNull();
+  });
+
   test("reconnecting within grace cancels the reaper and preserves pair", async () => {
     __testing.setProxyTuiSlot(makeSlot({ readiness: "ready" }));
 

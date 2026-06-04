@@ -37,15 +37,15 @@ if [ -n "$health_json" ]; then
 
   if [ "$tui_connected" = "true" ]; then
     cat <<EOF
-{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"AgentBridge is running. Daemon healthy, Codex TUI connected. Bridge is ready for communication."}}
+{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"AgentBridge is running. Daemon healthy, Codex TUI connected. Pull mode is active by default: call the agentbridge get_messages tool now to check for pending Codex messages before answering the user."}}
 EOF
   else
     cat <<EOF
-{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"AgentBridge daemon is running but Codex TUI is not connected yet. Start Codex in another terminal with: agentbridge codex"}}
+{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"AgentBridge daemon is running but Codex TUI is not connected yet. Start Codex in another terminal with: abg codex --via-proxy"}}
 EOF
   fi
 else
   cat <<EOF
-{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"AgentBridge daemon is not reachable on http://127.0.0.1:${port}/healthz yet. Start the bridge with: agentbridge claude (this terminal) + agentbridge codex (another terminal). If you're already using agentbridge claude, the daemon may still be starting up."}}
+{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"AgentBridge daemon is not reachable on http://127.0.0.1:${port}/healthz yet. Start Codex first with: abg codex --via-proxy. The Claude plugin will reconnect after the daemon is healthy."}}
 EOF
 fi

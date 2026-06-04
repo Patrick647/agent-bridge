@@ -578,9 +578,14 @@ describe("E2E: CLI surface", () => {
 
   test("bridge stays idle and does not relaunch daemon after kill writes the killed sentinel", async () => {
     await withHarness(async (harness) => {
-      const bridge = await harness.spawnBridge();
-
+      const codexProc = await harness.spawnCli(
+        ["codex", "--via-proxy"],
+        { AGENTBRIDGE_CODEX_SHIM_HOLD_MS: "30000" },
+      );
       await harness.waitForHealth();
+      expect(harness.readLaunches()).toHaveLength(1);
+
+      const bridge = await harness.spawnBridge();
       await harness.waitForOutput(bridge, "Daemon status:");
       expect(harness.readLaunches()).toHaveLength(1);
 
@@ -590,6 +595,7 @@ describe("E2E: CLI surface", () => {
       await harness.waitForOutput(bridge, "not reconnecting");
       await sleep(1200);
       expect(bridge.child.exitCode).toBeNull();
+      await waitFor(() => codexProc.child.exitCode !== null, 60, 50);
       expect(harness.readLaunches()).toHaveLength(1);
       expect(existsSync(join(harness.stateDir, "killed"))).toBe(true);
     });
